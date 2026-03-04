@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sudo crontab:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(python3:*)",
+      "Bash(head:*)",
+      "Bash(/home/nitwit/lilac_box/venv/bin/pip freeze:*)"
+    ]
+  }
+}

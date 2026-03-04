@@ -1,0 +1,28 @@
+/* /static/base.css - Bootstrap Compatible */
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+html, body {
+    font-family: 'Arial', "Helvetica Neue", sans-serif;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+}
+
+/* Custom styles that complement Bootstrap */
+.card {
+    border: none;
+}
+
+.card-header h5 {
+    color: white;
+    margin: 0;
+}
+
+/* Table enhancements for Bootstrap tables */
+.table th {
+    font-weight: 700;
+}
+
+/* Remove conflicting grid system - Bootstrap will handle this */

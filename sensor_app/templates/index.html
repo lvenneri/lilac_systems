@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sensor Dashboard</title>
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Local fonts -->
+  <!-- Import the shared CSS files (after Bootstrap for overrides) -->
+  <link rel="stylesheet" type="text/css" href="/static/base.css">
+  <link rel="stylesheet" type="text/css" href="/static/base_extra.css">
+  <link rel="stylesheet" type="text/css" href="/static/dashboard.css">
+  <!-- Bootstrap 5 JS Bundle (includes Popper) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Import your custom JS file (base.js) -->
+  <script src="/static/base.js"></script>
+</head>
+<body>
+  <!-- Main Container -->
+  <div class="container-fluid">
+
+    <!-- Header Row -->
+    <div class="row">
+      <div class="col-12">
+        <div class="d-flex align-items-center" id="site_header_row">
+          <div class="card" id="site_title_card">
+            <div class="card-header">
+              <h1 id="site_title">Lilac Box</h1>
+            </div>
+          </div>
+          <div class="d-flex align-items-center ms-auto" id="site_header_buttons">
+            <span id="header_clock" class="me-2"></span>
+            <div class="btn-group btn-group-sm me-2" role="group" id="panel_visibility_toggle">
+              <button class="btn btn-outline-secondary" id="hide_all_panels">Hide All</button>
+              <button class="btn btn-outline-secondary" id="show_all_panels">Show All</button>
+            </div>
+            <div class="btn-group btn-group-sm me-2" role="group" id="font_size_toggle">
+              <button class="btn btn-outline-secondary" id="font_decrease">−</button>
+              <button class="btn btn-outline-secondary" id="font_increase">+</button>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" id="dark_mode_toggle" title="Toggle dark mode">&#9789;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3-Column Masonry Layout -->
+    <div class="dashboard-columns">
+
+      <!-- Column 1 (Left): Empty for now -->
+      <div class="dashboard-col" id="col_left">
+        <div class="draggable-panel" draggable="true" data-panel-id="animated_scatter">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">CPU vs Ambient</h5>
+                <div class="d-flex align-items-center">
+                  <div class="btn-group btn-group-sm me-2" role="group" id="anim_scatter_toggle">
+                    <input type="radio" class="btn-check" name="anim_scatter_option" id="anim_scatter_30min" value="30min" autocomplete="off">
+                    <label class="btn btn-outline-secondary" for="anim_scatter_30min">30min</label>
+                    <input type="radio" class="btn-check" name="anim_scatter_option" id="anim_scatter_1min" value="1min" autocomplete="off" checked>
+                    <label class="btn btn-outline-secondary" for="anim_scatter_1min">1min</label>
+                  </div>
+                  <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="animated_scatter_body">
+                    <span class="toggle-icon">−</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="animated_scatter_body">
+              <canvas id="animated_scatter_canvas" style="width:100%; aspect-ratio:1/1;"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2 (Middle): Plots -->
+      <div class="dashboard-col" id="col_middle">
+        <div class="draggable-panel" draggable="true" data-panel-id="animated_ts">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Time Series</h5>
+                <div class="d-flex align-items-center">
+                  <div class="btn-group btn-group-sm me-2" role="group" id="anim_ts_toggle">
+                    <input type="radio" class="btn-check" name="anim_ts_option" id="anim_ts_30min" value="30min" autocomplete="off">
+                    <label class="btn btn-outline-secondary" for="anim_ts_30min">30min</label>
+                    <input type="radio" class="btn-check" name="anim_ts_option" id="anim_ts_1min" value="1min" autocomplete="off" checked>
+                    <label class="btn btn-outline-secondary" for="anim_ts_1min">1min</label>
+                  </div>
+                  <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="animated_ts_body">
+                    <span class="toggle-icon">−</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="animated_ts_body">
+              <canvas id="animated_ts_canvas" style="width:100%; height:720px;"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="draggable-panel" draggable="true" data-panel-id="legend">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Plot Legend</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="legend_body">
+                  <span class="toggle-icon">−</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="legend_body">
+              <div class="table-responsive">
+                <table class="table table-sm custom-table" id="legend_table">
+                  <thead>
+                    <tr><th>Series</th><th>Unit</th><th>Value</th></tr>
+                  </thead>
+                  <tbody id="legend_table_body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 3 (Right): Controls and Instruments -->
+      <div class="dashboard-col" id="col_right">
+        <div class="draggable-panel" draggable="true" data-panel-id="pid_loops">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Control</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="pid_loops_body">
+                  <span class="toggle-icon">&minus;</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="pid_loops_body">
+              <div id="step_series_container"></div>
+              <div id="pid_loops_container"></div>
+              <div id="output_controls_container"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="draggable-panel" draggable="true" data-panel-id="controls">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Config</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="controls_body">
+                  <span class="toggle-icon">−</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="controls_body">
+              <div id="controls">
+                <!-- Controls will be dynamically inserted here -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="draggable-panel" draggable="true" data-panel-id="interlocks">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Interlocks</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="interlocks_body">
+                  <span class="toggle-icon">&minus;</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="interlocks_body">
+              <div id="interlocks_container"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="draggable-panel" draggable="true" data-panel-id="instruments">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Instruments</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="instruments_body">
+                  <span class="toggle-icon">−</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="instruments_body">
+              <div class="table-responsive">
+                <table class="table custom-table" id="sensor_table">
+                  <thead>
+                    <tr>
+                      <th>Key</th>
+                      <th>Unit</th>
+                      <th>Value</th>
+                      <th style="width: 40px;">✓</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sensor_table_body"></tbody>
+                  <tr><th></th><th></th><th></th><th></th></tr>
+                  <tbody id="command_actual"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer Row -->
+    <div class="row">
+      <div class="col-12">
+        <footer id="footer" class="text-center text-muted py-3">
+          <small>Lilac Box</small>
+        </footer>
+      </div>
+    </div>
+
+  </div> <!-- End container-fluid -->
+
+  <script>
+    const sensorUnits = {{ sensor_units | tojson }};
+  </script>
+  <script src="/static/experiment.js"></script>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

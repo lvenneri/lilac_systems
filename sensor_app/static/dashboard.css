@@ -1,0 +1,754 @@
+@font-face {
+  font-family: 'DIN';
+  src: url('/static/fonts/DIN Alternate Bold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'DIN Condensed';
+  src: url('/static/fonts/DIN Condensed Bold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+}
+
+/* ===== Theme palette =====
+   Every themed colour lives here. To tweak a theme, edit ONE block.
+   --p-* vars are the raw palette; semantic vars below reference them
+   so each hex value appears exactly once per theme. */
+:root {
+  /* ── Palette ── */
+  --p-dark-gray:    #333;
+  --p-white:        #fff;
+  --p-mid-gray:     #6c757d;      /* Bootstrap secondary */
+  --p-light-gray:   #ddd;
+  --p-pale-gray:    #e8e8e8;
+  --p-blue:         #4377df;
+  --p-silver:       #ccc;
+
+  /* Surfaces */
+  --bg:               #f8f9fa;
+  --card-bg:          var(--p-white);
+  --card-header-bg:   transparent;
+
+  /* Text */
+  --text:             var(--p-dark-gray);
+  --text-heading:     var(--p-dark-gray);
+  --text-strong:      #000;
+  --text-muted:       #555;
+
+  /* Borders */
+  --border:           #e0e0e0;
+  --border-mid:       var(--p-light-gray);
+  --border-light:     var(--p-pale-gray);
+
+  /* Accent */
+  --accent:           #007bff;
+  --accent-bg:        rgba(0, 123, 255, 0.05);
+
+  /* Buttons (Bootstrap btn-outline-secondary overrides) */
+  --btn-text:         var(--p-mid-gray);
+  --btn-border:       var(--p-mid-gray);
+  --btn-hover-bg:     var(--p-mid-gray);
+  --btn-hover-text:   var(--p-white);
+  --btn-active-bg:    var(--p-mid-gray);
+  --btn-active-text:  var(--p-white);
+  --btn-active-border:var(--p-mid-gray);
+
+  /* Controls — sliders & segmented buttons */
+  --control-track:      var(--p-light-gray);
+  --control-fill:       var(--p-blue);
+  --control-fill-text:  var(--p-white);
+  --control-off-bg:     var(--p-white);
+  --control-off-text:   inherit;
+  --control-off-hover:  var(--p-pale-gray);
+  --slider-left:        var(--p-blue);
+  --slider-right:       #eaeaea;
+  --slider-ring:        var(--p-light-gray);
+
+  /* Text inputs */
+  --input-text:       inherit;
+  --input-border:     var(--p-silver);
+
+  /* Indicators */
+  --indicator-match:    #3177e7;
+  --indicator-mismatch: red;
+
+  /* Plot chrome (read by dashboard.js via getComputedStyle) */
+  --plot-axis:        var(--p-silver);
+  --plot-grid:        #eee;
+  --plot-separator:   var(--p-light-gray);
+  --plot-tick:        #888;
+  --plot-label:       #666;
+  --plot-trail:       150, 150, 150;
+}
+
+body.dark-mode {
+  /* ── Palette ── */
+  --p-light:        #e0e0e0;
+  --p-cool:         #c0c0d0;
+  --p-dim:          #a0a0b0;
+  --p-ink:         var(--p-cool);
+  --p-vivid-blue:   #4a6aff;
+  --p-charcoal:     #444444;
+  --p-navy:         #16213e;
+
+  /* Surfaces */
+  --bg:               #1a1a2e;
+  --card-bg:          var(--p-navy);
+  --card-header-bg:   linear-gradient(to bottom, #1a1a3e 0%, var(--p-navy) 100%);
+
+  /* Text */
+  --text:             var(--p-light);
+  --text-heading:     var(--p-cool);
+  --text-strong:      var(--p-cool);
+  --text-muted:       var(--p-dim);
+
+  /* Borders */
+  --border:           var(--p-ink);
+  --border-mid:       var(--p-ink);
+  --border-light:     var(--p-ink);
+
+  /* Accent */
+  --accent:           var(--p-vivid-blue);
+  --accent-bg:        rgba(74, 106, 255, 0.1);
+
+  /* Buttons */
+  --btn-text:         var(--p-dim);
+  --btn-border:       #3a3a5a;
+  --btn-hover-bg:     var(--p-ink);
+  --btn-hover-text:   var(--p-light);
+  --btn-active-bg:    var(--p-ink);
+  --btn-active-text:  var(--p-light);
+  --btn-active-border:#4a4a6a;
+
+  /* Controls */
+  --control-track:      var(--p-charcoal);
+  --control-fill:       var(--p-blue);
+  --control-fill-text:  #ffffff;
+  --control-off-bg:     #1a1a1a;
+  --control-off-text:   var(--p-light);
+  --control-off-hover:  #2d2d2d;
+  --slider-left:        var(--p-blue);
+  --slider-right:       var(--p-charcoal);
+  --slider-ring:        #666;
+
+  /* Text inputs */
+  --input-text:       var(--p-light);
+  --input-border:     #c6c6c8;
+
+  /* Indicators */
+  --indicator-match:    var(--p-vivid-blue);
+  --indicator-mismatch: #ff4444;
+
+  /* Plot chrome */
+  --plot-axis:        var(--p-charcoal);
+  --plot-grid:        var(--p-ink);
+  --plot-separator:   #333;
+  --plot-tick:        #999;
+  --plot-label:       #aaa;
+  --plot-trail:       150, 150, 150;
+}
+
+/* ===== Base layout ===== */
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  padding: 10px;
+  overflow-x: hidden;
+  font-family: 'DIN', 'DIN Condensed', sans-serif;
+}
+
+.container-fluid {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* ===== Cards ===== */
+.card {
+  margin-bottom: 10px;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 0px;
+}
+
+.card-header {
+  background: var(--card-header-bg);
+  color: var(--text-heading);
+  font-weight: bold;
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--border-mid);
+  border-radius: 0 !important;
+  cursor: move;
+}
+
+#site_title_card .card-header {
+  padding: 0;
+  border-radius: 0 0 12px 0px !important;
+}
+
+.card-header h5 {
+  color: var(--text-heading);
+  margin: 0;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: normal;
+}
+
+.card-body {
+  padding: 12px;
+}
+
+#site_title {
+  margin: 0;
+  font-size: 1.5rem !important;
+  padding: 2px 6px;
+  text-transform: uppercase;
+  letter-spacing: 5px;
+  font-weight: normal;
+  color: var(--text-heading);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#site_title::before {
+  content: "";
+  display: inline-block;
+  width: 1.4em;
+  height: 1em;
+  flex-shrink: 0;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 4px,
+      var(--bg) 4px,
+      var(--bg) 8px
+    ),
+    var(--text-heading);
+  transition: background 1s ease;
+}
+
+body.interlock-alarm #site_title::before {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 4px,
+      var(--bg) 4px,
+      var(--bg) 8px
+    ),
+    #ED673C;
+}
+
+#site_title_card {
+  border: 1px solid var(--border);
+  width: fit-content;
+
+}
+
+#site_header_row {
+  margin-bottom: 10px;
+}
+
+#header_clock {
+  font-family: 'DIN', 'DIN Condensed', monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  border: 1px solid var(--border);
+  padding: 4px 28px 4px 8px;
+  line-height: 1;
+  height: calc(1.5rem + 2px);
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+#header_clock::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  background: var(--border, #333);
+}
+
+#site_title_card .card-header {
+  border: none;
+}
+
+@keyframes hatch-scroll {
+  to { background-position: 28.28px 0; }
+}
+
+/* ===== Tables ===== */
+.custom-table {
+  margin-bottom: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-mid);
+  overflow: hidden;
+}
+
+.custom-table thead th {
+  color: var(--text-strong);
+  font-weight: bold;
+  background-color: transparent;
+  border-bottom: 1px solid var(--border-mid);
+  padding: 8px;
+}
+
+.custom-table tbody tr {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.custom-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.custom-table tbody td {
+  color: var(--text-muted);
+  padding: 6px 8px;
+}
+
+.custom-table tbody tr:nth-of-type(odd) {
+  background-color: transparent;
+}
+
+.custom-table tbody tr:hover {
+  background-color: transparent;
+}
+
+/* ===== Collapsible panels ===== */
+.card-body.panel-body-collapsible {
+  padding: 0;
+  transition: max-height 0.3s ease-out, opacity 0.2s ease-out;
+  overflow: hidden;
+}
+
+.panel-body-collapsible > * {
+  margin: 12px;
+}
+
+.panel-body-collapsible.collapsed {
+  max-height: 0 !important;
+  opacity: 0;
+}
+
+/* ===== Dashboard columns ===== */
+.dashboard-columns {
+  display: flex;
+  gap: 10px;
+}
+
+.dashboard-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+@media (max-width: 991px) {
+  .dashboard-columns {
+    flex-direction: column;
+  }
+}
+
+/* ===== Buttons ===== */
+.btn-group-sm .btn,
+.btn-sm.toggle-panel,
+#dark_mode_toggle {
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  border-radius: 0;
+  line-height: 1.4;
+}
+
+/* ===== Drag and drop ===== */
+.draggable-panel {
+  cursor: move;
+  transition: opacity 0.2s;
+}
+
+.draggable-panel.dragging {
+  opacity: 0.5;
+}
+
+.draggable-panel.drag-over {
+  border: 2px dashed var(--accent);
+  background-color: var(--accent-bg);
+}
+
+/* ===== Dark mode: third-party overrides =====
+   These override Bootstrap and base_extra.css rules that can't use
+   CSS variables directly.  Actual colour values stay in the palette above. */
+
+body.dark-mode .btn-outline-secondary {
+  color: var(--btn-text);
+  border-color: var(--btn-border);
+}
+
+body.dark-mode .btn-outline-secondary:hover {
+  background-color: var(--btn-hover-bg);
+  color: var(--btn-hover-text);
+}
+
+body.dark-mode .btn-check:checked + .btn-outline-secondary {
+  background-color: var(--btn-active-bg);
+  color: var(--btn-active-text);
+  border-color: var(--btn-active-border);
+}
+
+body.dark-mode .table {
+  color: var(--text-strong);
+  --bs-table-bg: transparent;
+  --bs-table-striped-bg: transparent;
+  --bs-table-hover-bg: transparent;
+}
+
+body.dark-mode .table th,
+body.dark-mode .table td {
+  border-color: var(--border);
+}
+
+body.dark-mode label {
+  color: var(--text-heading);
+}
+
+/* ===== Hatch bar on Controls, PID & Interlocks headers ===== */
+[data-panel-id="controls"] .card-header,
+[data-panel-id="pid_loops"] .card-header,
+[data-panel-id="interlocks"] .card-header {
+  position: relative;
+}
+
+[data-panel-id="controls"] .card-header::after,
+[data-panel-id="pid_loops"] .card-header::after,
+[data-panel-id="interlocks"] .card-header::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--border, #333),
+    var(--border, #333) 5px,
+    var(--card-bg, #fff) 5px,
+    var(--card-bg, #fff) 10px
+  );
+}
+
+/* Red hatch overlay for interlocks alarm */
+[data-panel-id="interlocks"] .card-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--indicator-mismatch),
+    var(--indicator-mismatch) 5px,
+    var(--card-bg, #fff) 5px,
+    var(--card-bg, #fff) 10px
+  );
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+[data-panel-id="interlocks"].interlock-alarm .card-header::before {
+  animation: hatch-pulse 1s ease-in-out infinite;
+}
+
+[data-panel-id="interlocks"].interlock-alarm .card {
+  animation: border-pulse 1s ease-in-out infinite;
+}
+
+@keyframes hatch-pulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+@keyframes border-pulse {
+  0%, 100% { border-color: var(--border); }
+  50% { border-color: #b08080; }
+}
+
+[data-panel-id="controls"] .card-header > *,
+[data-panel-id="pid_loops"] .card-header > *,
+[data-panel-id="interlocks"] .card-header > * {
+  position: relative;
+  z-index: 2;
+}
+
+[data-panel-id="controls"] .card-header h5,
+[data-panel-id="pid_loops"] .card-header h5,
+[data-panel-id="interlocks"] .card-header h5,
+[data-panel-id="controls"] .card-header .toggle-panel,
+[data-panel-id="pid_loops"] .card-header .toggle-panel,
+[data-panel-id="interlocks"] .card-header .toggle-panel {
+  background-color: var(--card-bg);
+  border: var(--border, #333) .5px solid;
+  padding: 0 6px;
+}
+
+/* ===== PID Control Loop Panels ===== */
+.pid-loop-panel {
+  border: 1px solid var(--border);
+  border-radius: 0px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.output-controls-panel {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.pid-loop-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pid-loop-title {
+  font-size: 0.85rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-heading);
+}
+
+.pid-status-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-left: 10px;
+}
+
+.pid-status-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-left: 6px;
+}
+
+.pid-status-label:first-child {
+  margin-left: 0;
+}
+
+.pid-status-value {
+  font-family: 'DIN', 'DIN Condensed', monospace;
+  font-size: 0.85rem;
+  color: var(--text-strong);
+}
+
+.pid-status-units {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+/* ===== Seg group alignment (match slider_group spacing) ===== */
+.seg_group.group {
+  margin: 10px 0;
+}
+
+.seg_group.group .slider_text {
+  flex: 0 0 20%;
+}
+
+.seg_group.group .segmented_control_container {
+  flex: 0 1 auto;
+  margin-left: 0.0%;
+  width: 65%;
+  max-width: 380px;
+}
+
+/* ===== Interlock Status ===== */
+.interlock-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.interlock-row:last-child {
+  border-bottom: none;
+}
+
+.interlock-name {
+  font-size: 0.8rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-heading);
+}
+
+.interlock-condition {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  flex: 1;
+  text-align: center;
+  margin: 0 8px;
+}
+
+.interlock-status {
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.interlock-tripped {
+  color: var(--indicator-mismatch);
+  animation: warning-pulse-fast 0.33s ease-in-out infinite;
+}
+
+.interlock-clear {
+  color: var(--indicator-match);
+}
+
+.interlock-header-warning {
+  color: var(--indicator-mismatch);
+  font-size: 0.85rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--card-bg);
+  padding: 0 6px;
+  border: var(--indicator-mismatch) .5px solid;
+}
+
+@keyframes warning-pulse-fast {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* ===== Step Series Controls ===== */
+#step_series_container {
+  border: 1px solid var(--border);
+  border-radius: 0px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.step-series-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.step-series-indicator {
+  font-family: 'DIN', 'DIN Condensed', monospace;
+  font-size: 0.9rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-heading);
+}
+
+.step-settled-dot {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 6px;
+}
+
+/* Outer flex row for output controls — control fills space, dot at far right */
+.output-control-row {
+  display: flex;
+  align-items: center;
+}
+
+.output-control-row > .slider_group.group,
+.output-control-row > .seg_group.group {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-series-transport {
+  margin-bottom: 6px;
+}
+
+.step-transport-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 30px;
+  padding: 0 10px;
+}
+
+.step-transport-btn svg {
+  display: block;
+}
+
+.step-play-pause {
+  min-width: 46px !important;
+}
+
+.step-play-pause.playing {
+  background-color: var(--control-fill);
+  color: var(--control-fill-text);
+  border-color: var(--control-fill);
+}
+
+.step-series-timer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.step-series-timer-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  flex: 0 0 22%;
+}
+
+.step-series-progress-track {
+  flex: 1;
+  height: 4px;
+  background-color: var(--control-track);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.step-series-progress-fill {
+  height: 100%;
+  background-color: var(--control-fill);
+  transition: width 0.05s linear;
+  width: 0%;
+}
+
+.step-series-progress-fill.settling {
+  background-color: var(--indicator-mismatch);
+  animation: settling-pulse 1s ease-in-out infinite;
+  width: 100% !important;
+}
+
+@keyframes settling-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}
+
+.step-series-timer-text {
+  font-family: 'DIN', 'DIN Condensed', monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-width: 100px;
+  text-align: right;
+}
