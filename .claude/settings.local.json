@@ -8,7 +8,8 @@
       "Bash(python3:*)",
       "Bash(head:*)",
       "Bash(/home/nitwit/lilac_box/venv/bin/pip freeze:*)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(grep -n \"function makeControlPanel\" /Users/nitwit/Dropbox/LilacBox/lilac_box/sensor_app/static/*.js)"
     ]
   }
 }

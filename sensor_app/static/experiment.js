@@ -689,7 +689,7 @@ function updateStepSeriesStatus(status) {
   if (!stepSeriesUI || !status || Object.keys(status).length === 0) return;
 
   const ui = stepSeriesUI;
-  const cooldown = (Date.now() - stepSeriesLastAction) < 500;
+  const cooldown = (Date.now() - stepSeriesLastAction) < 1500;
 
   // Update step indicator
   ui.indicator.textContent = "Step " + (status.current_step + 1) + " / " + status.total_steps;

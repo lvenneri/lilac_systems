@@ -26,7 +26,7 @@
         <div class="d-flex align-items-center" id="site_header_row">
           <div class="card" id="site_title_card">
             <div class="card-header">
-              <h1 id="site_title">Lilac Box</h1>
+              <h1 id="site_title">Lilac Systems</h1>
             </div>
           </div>
           <div class="d-flex align-items-center ms-auto" id="site_header_buttons">
@@ -48,13 +48,14 @@
     <!-- 3-Column Masonry Layout -->
     <div class="dashboard-columns">
 
-      <!-- Column 1 (Left): Empty for now -->
+      <!-- Column 1 (Left) -->
       <div class="dashboard-col" id="col_left">
+        {% if scatter_x and scatter_y %}
         <div class="draggable-panel" draggable="true" data-panel-id="animated_scatter">
           <div class="card">
             <div class="card-header">
               <div class="d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">CPU vs Ambient</h5>
+                <h5 class="mb-0">{{ scatter_y }} vs {{ scatter_x }}</h5>
                 <div class="d-flex align-items-center">
                   <div class="btn-group btn-group-sm me-2" role="group" id="anim_scatter_toggle">
                     <input type="radio" class="btn-check" name="anim_scatter_option" id="anim_scatter_30min" value="30min" autocomplete="off">
@@ -73,6 +74,7 @@
             </div>
           </div>
         </div>
+        {% endif %}
       </div>
 
       <!-- Column 2 (Middle): Plots -->
@@ -216,7 +218,7 @@
     <div class="row">
       <div class="col-12">
         <footer id="footer" class="text-center text-muted py-3">
-          <small>Lilac Box</small>
+          <small>Lilac Systems</small>
         </footer>
       </div>
     </div>
@@ -225,6 +227,7 @@
 
   <script>
     const sensorUnits = {{ sensor_units | tojson }};
+    const SCATTER_CONFIG = { x: "{{ scatter_x }}", y: "{{ scatter_y }}" };
   </script>
   <script src="/static/experiment.js"></script>
   <script src="/static/dashboard.js"></script>

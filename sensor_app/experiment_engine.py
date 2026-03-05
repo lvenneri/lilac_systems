@@ -54,6 +54,7 @@ class ExperimentEngine:
         self.step_settled_cols = {}     # {column_header: bool} per-column settled state
         self.step_hold_elapsed = 0.0
         self.step_hold_total = self.step_series[0]["hold_time"] if self.step_series else 0.0
+        self._step_last_tick = None  # wall-clock time of last hold tick
 
         self._running = False
 
@@ -294,14 +295,18 @@ class ExperimentEngine:
             if self.step_mode == "auto" and len(self.step_series) > 0:
                 self.step_settled = self._check_step_settled(readings)
                 if self.step_running and self.step_settled:
-                    dt = 1.0 / max(freq, 1)
-                    self.step_hold_elapsed += dt
+                    if self._step_last_tick is not None:
+                        dt = now - self._step_last_tick
+                        self.step_hold_elapsed += dt
+                    self._step_last_tick = now
                     if self.step_hold_elapsed >= self.step_hold_total:
                         next_idx = self.step_current + 1
                         if next_idx < len(self.step_series):
                             self._go_to_step(next_idx)
                         else:
                             self.step_running = False
+                else:
+                    self._step_last_tick = None
 
             # 4. Build flat sensor dict (channels + PID virtual channels)
             flat_sensors = dict(readings)
@@ -503,6 +508,7 @@ class ExperimentEngine:
         """Internal: jump to step index and apply setpoints."""
         self.step_current = idx
         self.step_hold_elapsed = 0.0
+        self._step_last_tick = None
         self.step_settled = False
         self.step_settled_cols = {}
         step = self.step_series[idx]

@@ -6,19 +6,23 @@ A config-driven experiment control and monitoring dashboard built with Flask and
 
 ```bash
 source ../venv/bin/activate
-python app.py                     # uses example_config.xlsx
-python app.py my_experiment.xlsx  # uses a custom config
+python app.py                              # uses example_config.xlsx, opens browser
+python app.py my_experiment.xlsx           # uses a custom config
+python app.py --port 8080                  # serve on a different port
+python app.py --no-browser                 # don't auto-open the browser
+python app.py --validate-only my.xlsx      # check config without starting
 ```
 
-Open `http://<pi-ip>:5001` in a browser.
+The dashboard opens automatically at `http://localhost:5001`. On a headless Pi, use `--no-browser`.
 
 The app ships with `example_config.xlsx` which runs a simulated experiment: random sensors, a thermal reactor model, a PID loop controlling heater output to reach a temperature setpoint, and an over-temperature interlock.
 
 ## Architecture
 
 ```
-app.py                  Flask routes + startup (loads config, starts engine)
+app.py                  Flask routes + startup (loads config, validates, starts engine)
 config_loader.py        Parses Excel config into Python dicts
+validate_config.py      Config validation (cross-references, driver types, ranges)
 experiment_engine.py    Main loop: sampling, PID, interlocks, CSV logging
 pid_controller.py       PID controller with anti-windup
 driver_base.py          Abstract instrument driver + SimulatedDriver + registry
@@ -120,6 +124,10 @@ Key-value pairs for global configuration.
 | Log Subsample | `10` | Log every Nth sample to CSV |
 | Data Buffer Size | `10000` | Ring buffer size for plotting |
 | CSV Log File | `data_{timestamp}.csv` | Output file path |
+| Scatter X Channel | `ambient_temp` | Channel for scatter plot X axis (omit to hide scatter panel) |
+| Scatter Y Channel | `cpu_temp` | Channel for scatter plot Y axis (omit to hide scatter panel) |
+| Poll Interval (ms) | `100` | Dashboard refresh rate |
+| Max Plot Points | `10000` | Max data points retained for plotting |
 
 ## Setting Up a New Experiment
 
@@ -133,7 +141,15 @@ Instruments  --1:N-->  Channels  --referenced by-->  Control Loops
                                                      Logging
 ```
 
-### 2. Write a driver (if using real hardware)
+### 2. Validate the config
+
+```bash
+python validate_config.py my_experiment.xlsx
+```
+
+Checks all cross-references (channels reference valid instruments, control loops reference valid channels, interlocks reference valid targets, etc.), verifies driver types exist, and catches range errors. The app also runs this automatically at startup and refuses to start if there are errors.
+
+### 3. Write a driver (if using real hardware)
 
 Create a class that extends `DriverBase` in `driver_base.py`:
 

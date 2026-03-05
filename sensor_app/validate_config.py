@@ -1,0 +1,272 @@
+"""Validate an experiment config Excel file.
+
+Checks all cross-references between sheets, verifies driver types exist,
+and catches common mistakes before the app runs.
+
+Usage:
+    python validate_config.py                     # validates example_config.xlsx
+    python validate_config.py my_config.xlsx      # validates a specific file
+    python validate_config.py --strict my.xlsx    # treat warnings as errors
+"""
+
+import argparse
+import os
+import sys
+
+from config_loader import load_config
+from driver_base import DRIVER_REGISTRY
+
+
+def validate(config):
+    """Validate a parsed config dict.
+
+    Returns (errors, warnings) where each is a list of strings.
+    Errors are hard failures; warnings are suspicious but non-fatal.
+    """
+    errors = []
+    warnings = []
+
+    instruments = config.get("instruments", {})
+    channels = config.get("channels", {})
+    control_loops = config.get("control_loops", {})
+    interlocks = config.get("interlocks", [])
+    logging_cfg = config.get("logging", {})
+    settings = config.get("settings", {})
+    step_series = config.get("step_series", [])
+    step_columns = config.get("step_columns", [])
+
+    # Helper: enabled channels by direction
+    enabled_channels = {n: c for n, c in channels.items() if c.get("enabled", True)}
+    input_channels = {n: c for n, c in enabled_channels.items() if c["direction"] == "input"}
+    output_channels = {n: c for n, c in enabled_channels.items() if c["direction"] == "output"}
+    enabled_instruments = {n: i for n, i in instruments.items() if i.get("enabled", True)}
+    enabled_loops = {n: l for n, l in control_loops.items() if l.get("enabled", True)}
+
+    # ── Instruments ──────────────────────────────────────────────────
+    for name, inst in instruments.items():
+        if not inst.get("enabled", True):
+            continue
+        driver_type = inst.get("type", "simulated")
+        if driver_type not in DRIVER_REGISTRY:
+            warnings.append(
+                f"Instruments > {name}: type '{driver_type}' not in DRIVER_REGISTRY "
+                f"(available: {', '.join(DRIVER_REGISTRY.keys())}); will fall back to simulated"
+            )
+        poll = inst.get("poll_rate", 0.1)
+        if not isinstance(poll, (int, float)) or poll <= 0:
+            errors.append(f"Instruments > {name}: Poll Rate must be > 0, got {poll}")
+        timeout = inst.get("timeout", 5)
+        if not isinstance(timeout, (int, float)) or timeout <= 0:
+            errors.append(f"Instruments > {name}: Timeout must be > 0, got {timeout}")
+
+    # ── Channels ─────────────────────────────────────────────────────
+    for name, ch in channels.items():
+        if not ch.get("enabled", True):
+            continue
+        # Instrument reference
+        inst_name = ch.get("instrument", "")
+        if inst_name and inst_name not in instruments:
+            errors.append(f"Channels > {name}: Instrument '{inst_name}' does not exist")
+        elif inst_name and inst_name not in enabled_instruments:
+            warnings.append(f"Channels > {name}: Instrument '{inst_name}' is disabled")
+        # Direction
+        direction = ch.get("direction", "")
+        if direction not in ("input", "output"):
+            errors.append(f"Channels > {name}: Direction must be 'input' or 'output', got '{direction}'")
+        # Range
+        ch_min = ch.get("min", 0)
+        ch_max = ch.get("max", 100)
+        if isinstance(ch_min, (int, float)) and isinstance(ch_max, (int, float)):
+            if ch_min >= ch_max:
+                errors.append(f"Channels > {name}: Min ({ch_min}) must be < Max ({ch_max})")
+        # Slope
+        slope = ch.get("slope", 1)
+        if slope == 0 and direction == "output":
+            warnings.append(f"Channels > {name}: Slope is 0 — will cause division by zero on output scaling")
+
+    # ── Control Loops ────────────────────────────────────────────────
+    for name, loop in control_loops.items():
+        if not loop.get("enabled", True):
+            continue
+        # Process Variable
+        pv = loop.get("pv_channel", "")
+        if pv not in channels:
+            errors.append(f"Control Loops > {name}: Process Variable '{pv}' does not exist in Channels")
+        elif pv not in enabled_channels:
+            errors.append(f"Control Loops > {name}: Process Variable '{pv}' is disabled")
+        elif channels[pv]["direction"] != "input":
+            errors.append(f"Control Loops > {name}: Process Variable '{pv}' must be an input channel")
+        # Output Channel
+        out = loop.get("output_channel", "")
+        if out not in channels:
+            errors.append(f"Control Loops > {name}: Output Channel '{out}' does not exist in Channels")
+        elif out not in enabled_channels:
+            errors.append(f"Control Loops > {name}: Output Channel '{out}' is disabled")
+        elif channels[out]["direction"] != "output":
+            errors.append(f"Control Loops > {name}: Output Channel '{out}' must be an output channel")
+        # Self-reference
+        if pv and pv == out:
+            errors.append(f"Control Loops > {name}: Process Variable and Output Channel are the same ('{pv}')")
+        # Range
+        out_min = loop.get("out_min", 0)
+        out_max = loop.get("out_max", 100)
+        if isinstance(out_min, (int, float)) and isinstance(out_max, (int, float)):
+            if out_min >= out_max:
+                errors.append(f"Control Loops > {name}: Out Min ({out_min}) must be < Out Max ({out_max})")
+        # Sample Time
+        st = loop.get("sample_time", 0.1)
+        if not isinstance(st, (int, float)) or st <= 0:
+            errors.append(f"Control Loops > {name}: Sample Time must be > 0, got {st}")
+        # Mode
+        mode = loop.get("mode", "manual")
+        if mode not in ("manual", "auto"):
+            errors.append(f"Control Loops > {name}: Mode must be 'manual' or 'auto', got '{mode}'")
+
+    # ── Interlocks ───────────────────────────────────────────────────
+    interlock_names = set()
+    valid_conditions = {">", "<", ">=", "<="}
+    valid_actions = {"alarm", "set_output", "disable_loop"}
+
+    for il in interlocks:
+        if not il.get("enabled", True):
+            continue
+        name = il.get("name", "")
+        if name in interlock_names:
+            errors.append(f"Interlocks > {name}: duplicate interlock name")
+        interlock_names.add(name)
+        # Channel
+        ch = il.get("channel", "")
+        if ch not in channels:
+            errors.append(f"Interlocks > {name}: Channel '{ch}' does not exist in Channels")
+        elif ch not in enabled_channels:
+            warnings.append(f"Interlocks > {name}: Channel '{ch}' is disabled")
+        # Condition
+        cond = il.get("condition", "")
+        if cond not in valid_conditions:
+            errors.append(f"Interlocks > {name}: Condition must be one of {valid_conditions}, got '{cond}'")
+        # Action
+        action = il.get("action", "")
+        if action not in valid_actions:
+            errors.append(f"Interlocks > {name}: Action must be one of {valid_actions}, got '{action}'")
+        # Target
+        target = il.get("target", "")
+        if action == "set_output":
+            if not target:
+                errors.append(f"Interlocks > {name}: Action 'set_output' requires a Target channel")
+            elif target not in output_channels:
+                errors.append(
+                    f"Interlocks > {name}: Target '{target}' must be an enabled output channel "
+                    f"(for action 'set_output')"
+                )
+        elif action == "disable_loop":
+            if not target:
+                errors.append(f"Interlocks > {name}: Action 'disable_loop' requires a Target loop name")
+            elif target not in enabled_loops:
+                errors.append(
+                    f"Interlocks > {name}: Target '{target}' must be an enabled control loop "
+                    f"(for action 'disable_loop')"
+                )
+
+    # ── Logging ──────────────────────────────────────────────────────
+    for ch_name, log_cfg in logging_cfg.items():
+        if ch_name not in channels:
+            warnings.append(f"Logging > {ch_name}: Channel does not exist in Channels sheet")
+        low = log_cfg.get("alarm_low")
+        high = log_cfg.get("alarm_high")
+        if low is not None and high is not None:
+            if isinstance(low, (int, float)) and isinstance(high, (int, float)) and low >= high:
+                errors.append(f"Logging > {ch_name}: Alarm Low ({low}) must be < Alarm High ({high})")
+
+    # ── Step Series ──────────────────────────────────────────────────
+    # Build PV-to-loop map for SP column validation
+    pv_to_loop = {}
+    for loop_name, loop_cfg in enabled_loops.items():
+        pv_to_loop[loop_cfg["pv_channel"]] = loop_name
+
+    for col in step_columns:
+        header = col.get("header", "")
+        if col["type"] == "pid_setpoint":
+            pv_ch = col.get("pv_channel", "")
+            if pv_ch not in input_channels:
+                errors.append(
+                    f"Step Series > column '{header}': PV channel '{pv_ch}' "
+                    f"does not exist as an enabled input channel"
+                )
+            elif pv_ch not in pv_to_loop:
+                errors.append(
+                    f"Step Series > column '{header}': PV channel '{pv_ch}' "
+                    f"is not the Process Variable of any enabled control loop"
+                )
+        elif col["type"] == "output_channel":
+            ch_name = col.get("channel_name", "")
+            if ch_name not in output_channels:
+                errors.append(
+                    f"Step Series > column '{header}': output channel '{ch_name}' "
+                    f"does not exist as an enabled output channel"
+                )
+        tol = col.get("tolerance")
+        if tol is not None and (not isinstance(tol, (int, float)) or tol <= 0):
+            errors.append(f"Step Series > column '{header}': Tolerance must be > 0, got {tol}")
+
+    for step in step_series:
+        hold = step.get("hold_time", 0)
+        if not isinstance(hold, (int, float)) or hold < 0:
+            errors.append(f"Step Series > Step {step.get('step_num', '?')}: Hold Time must be >= 0, got {hold}")
+
+    # ── Settings ─────────────────────────────────────────────────────
+    freq = settings.get("Sample Frequency (Hz)")
+    if freq is not None:
+        if not isinstance(freq, (int, float)) or freq <= 0:
+            errors.append(f"Settings > Sample Frequency (Hz): must be > 0, got {freq}")
+
+    log_sub = settings.get("Log Subsample")
+    if log_sub is not None:
+        if not isinstance(log_sub, (int, float)) or log_sub < 1:
+            errors.append(f"Settings > Log Subsample: must be >= 1, got {log_sub}")
+
+    buf = settings.get("Data Buffer Size")
+    if buf is not None:
+        if not isinstance(buf, (int, float)) or buf <= 0:
+            errors.append(f"Settings > Data Buffer Size: must be > 0, got {buf}")
+
+    for key in ("Scatter X Channel", "Scatter Y Channel"):
+        val = settings.get(key)
+        if val and str(val).strip():
+            if str(val).strip() not in channels:
+                errors.append(f"Settings > {key}: channel '{val}' does not exist in Channels")
+
+    return errors, warnings
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate experiment config")
+    parser.add_argument("config", nargs="?",
+                        default=os.path.join(os.path.dirname(__file__), "example_config.xlsx"),
+                        help="Path to config .xlsx (default: example_config.xlsx)")
+    parser.add_argument("--strict", action="store_true",
+                        help="Treat warnings as errors")
+    args = parser.parse_args()
+
+    print(f"Validating: {args.config}")
+    config = load_config(args.config)
+    errors, warnings = validate(config)
+
+    for w in warnings:
+        print(f"  WARNING: {w}")
+    for e in errors:
+        print(f"  ERROR:   {e}")
+
+    if args.strict and warnings:
+        errors.extend(warnings)
+
+    if errors:
+        print(f"\nFailed: {len(errors)} error(s), {len(warnings)} warning(s)")
+        sys.exit(1)
+    elif warnings:
+        print(f"\nPassed with {len(warnings)} warning(s)")
+    else:
+        print("\nPassed: no errors or warnings")
+
+
+if __name__ == "__main__":
+    main()

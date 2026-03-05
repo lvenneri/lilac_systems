@@ -45,7 +45,7 @@ let sensorData = {};
 
 // Plot data arrays (dynamically built)
 let plotData = [[]]; // Start with just timestamps, series added dynamically
-const MAX_PLOT_POINTS = 10000; // Limit data retention
+let MAX_PLOT_POINTS = 10000; // Overridden by config if available
 
 // Track which series are enabled (built dynamically)
 let enabledSeries = {};
@@ -185,12 +185,12 @@ const animScatter = (function() {
     ctx.fillStyle = plotTheme.label;
     ctx.font = (11 * dpr) + "px 'DIN', sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Ambient Temp", (PAD_LEFT + (w - PAD_LEFT - PAD_RIGHT) / 2) * dpr, (h - 5) * dpr);
+    ctx.fillText(SCATTER_CONFIG.x, (PAD_LEFT + (w - PAD_LEFT - PAD_RIGHT) / 2) * dpr, (h - 5) * dpr);
 
     ctx.save();
     ctx.translate(12 * dpr, (PAD_TOP + (h - PAD_TOP - PAD_BOTTOM) / 2) * dpr);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText("CPU Temp", 0, 0);
+    ctx.fillText(SCATTER_CONFIG.y, 0, 0);
     ctx.restore();
 
     ctx.restore();
@@ -198,8 +198,8 @@ const animScatter = (function() {
 
   // Build visible points from plotData for the chosen mode
   function getVisiblePoints() {
-    const cpuIdx = sensorToSeriesMap['cpu_temp'];
-    const ambientIdx = sensorToSeriesMap['ambient_temp'];
+    const cpuIdx = sensorToSeriesMap[SCATTER_CONFIG.y];
+    const ambientIdx = sensorToSeriesMap[SCATTER_CONFIG.x];
     if (!cpuIdx || !ambientIdx || !plotInitialized) return null;
     const dataLen = plotData[0].length;
     if (dataLen === 0) return null;
@@ -350,8 +350,8 @@ const animScatter = (function() {
 
 function updateAnimatedScatter() {
   if (!animScatter) return;
-  const cpuIdx = sensorToSeriesMap['cpu_temp'];
-  const ambientIdx = sensorToSeriesMap['ambient_temp'];
+  const cpuIdx = sensorToSeriesMap[SCATTER_CONFIG.y];
+  const ambientIdx = sensorToSeriesMap[SCATTER_CONFIG.x];
   if (!cpuIdx || !ambientIdx) return;
   const len = plotData[0].length;
   if (len === 0) return;
@@ -852,7 +852,8 @@ function updateControl(key, value) {
 }
 
 
-const controlConfig = {
+// Control config defaults — overridden by settings from /config endpoint
+let controlConfig = {
   sliders: [],
   segments: [],
   textInputs: [
@@ -865,9 +866,29 @@ const controlConfig = {
   ]
 };
 
+let controls = {};
 
-// Create the control panel inside the element with ID "controls"
-const controls = makeControlPanel("controls", controlConfig);
+// Fetch config and apply settings before starting the dashboard
+fetch('/config')
+  .then(r => r.json())
+  .then(cfg => {
+    const s = cfg.settings || {};
+    // Apply dashboard settings from config
+    if (s["Max Plot Points"]) MAX_PLOT_POINTS = Number(s["Max Plot Points"]) || 10000;
+    if (s["Poll Interval (ms)"]) POLL_INTERVAL = Number(s["Poll Interval (ms)"]) || 100;
+    // Apply control defaults from config
+    const csvFile = s["CSV Log File"];
+    const sampleFreq = s["Sample Frequency (Hz)"];
+    const logSub = s["Log Subsample"];
+    if (csvFile) controlConfig.textInputs[0].defaultValue = String(csvFile);
+    if (sampleFreq) controlConfig.textInputs[1].defaultValue = sampleFreq;
+    if (logSub) controlConfig.textInputs[2].defaultValue = logSub;
+  })
+  .catch(err => console.warn("Could not fetch /config, using defaults:", err))
+  .finally(() => {
+    controls = makeControlPanel("controls", controlConfig);
+    fetchSensorData();
+  });
 
 // Cache for last sent command values to avoid unnecessary updates
 let lastCommandValues = {};
@@ -924,7 +945,7 @@ let firstFetchComplete = false;
 // Track last server timestamp for fetching new plot data
 let lastDataTimestamp = 0;
 
-const POLL_INTERVAL = 100; // ms between polls (half the 10Hz sample rate)
+let POLL_INTERVAL = 100; // Overridden by config if available
 
 function fetchSensorData() {
   fetch('/data_since/' + lastDataTimestamp)
@@ -1011,7 +1032,7 @@ function fetchSensorData() {
     });
 }
 
-fetchSensorData();
+// fetchSensorData() is called from the /config fetch .finally() block above
 
 // Font size step functionality
 const FONT_SIZE_MIN = 10;

@@ -1,21 +1,45 @@
 from flask import Flask, render_template, jsonify, request
-import argparse, csv, os, threading
+import argparse, csv, os, sys, threading, webbrowser
 
 from config_loader import load_config
+from validate_config import validate
 from experiment_engine import ExperimentEngine
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# Load experiment config
+# Load and validate experiment config
 # ---------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description="Sensor App")
 parser.add_argument("config", nargs="?",
                     default=os.path.join(os.path.dirname(__file__), 'example_config.xlsx'),
                     help="Path to experiment config .xlsx (default: example_config.xlsx)")
+parser.add_argument("--port", type=int, default=5001,
+                    help="Port to serve on (default: 5001)")
+parser.add_argument("--no-browser", action="store_true",
+                    help="Don't auto-open the dashboard in a browser")
+parser.add_argument("--validate-only", action="store_true",
+                    help="Validate the config and exit without starting the server")
 args = parser.parse_args()
 CONFIG_PATH = args.config
 config = load_config(CONFIG_PATH)
+
+errors, warnings = validate(config)
+for w in warnings:
+    print(f"  WARNING: {w}")
+if errors:
+    for e in errors:
+        print(f"  ERROR:   {e}")
+    print(f"\nConfig validation failed ({len(errors)} error(s)). Fix the config and try again.")
+    sys.exit(1)
+if args.validate_only:
+    n = len(warnings)
+    print(f"Config OK" + (f" ({n} warning(s))" if n else ""))
+    sys.exit(0)
+
+# Resolve CSV output directory relative to the config file
+CONFIG_DIR = os.path.dirname(os.path.abspath(CONFIG_PATH))
+os.chdir(CONFIG_DIR)
 
 # Build SENSOR_UNITS from config channels (served to frontend via Jinja)
 SENSOR_UNITS = {}
@@ -30,6 +54,11 @@ for loop_name, loop_cfg in config.get("control_loops", {}).items():
     SENSOR_UNITS[f"pid.{loop_name}.pv"] = sp_units
     SENSOR_UNITS[f"pid.{loop_name}.output"] = "%"
     SENSOR_UNITS[f"pid.{loop_name}.error"] = sp_units
+
+# Dashboard settings from config (passed to template)
+_settings = config.get("settings", {})
+SCATTER_X = str(_settings.get("Scatter X Channel", "")).strip()
+SCATTER_Y = str(_settings.get("Scatter Y Channel", "")).strip()
 
 # ---------------------------------------------------------------------------
 # Create and start experiment engine
@@ -46,7 +75,8 @@ sampler_thread.start()
 
 @app.route('/')
 def index():
-    return render_template('index.html', sensor_units=SENSOR_UNITS)
+    return render_template('index.html', sensor_units=SENSOR_UNITS,
+                           scatter_x=SCATTER_X, scatter_y=SCATTER_Y)
 
 
 @app.route('/data_since/<path:since>')
@@ -195,4 +225,8 @@ def step_series_goto():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)
+    port = args.port
+    if not args.no_browser:
+        # Open after a short delay so the server has time to start
+        threading.Timer(1.5, webbrowser.open, args=[f"http://localhost:{port}"]).start()
+    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)

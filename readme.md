@@ -1,4 +1,4 @@
-# Lilac Box
+# Lilac Systems
 
 A config-driven experiment control and monitoring dashboard built with Flask. Supports real-time plotting, PID control loops, safety interlocks, and CSV data logging. Designed to run on a Raspberry Pi.
 
@@ -8,7 +8,7 @@ Requires Python 3.11+.
 
 ```bash
 git clone <repo-url>
-cd lilac_box
+cd lilac_systems
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -19,11 +19,16 @@ pip install -r requirements.txt
 ```bash
 source venv/bin/activate
 cd sensor_app
-python app.py                     # uses example_config.xlsx
-python app.py my_experiment.xlsx  # uses a custom config
+python app.py                              # uses example_config.xlsx, opens browser
+python app.py my_experiment.xlsx           # uses a custom config
+python app.py --port 8080                  # serve on a different port
+python app.py --no-browser                 # don't auto-open the browser
+python app.py --validate-only my.xlsx      # check config without starting the server
 ```
 
-Open `http://<pi-ip>:5001` in a browser.
+The dashboard opens automatically in your browser. On a headless Pi, use `--no-browser` and navigate to `http://<pi-ip>:5001`.
+
+CSV data files are written next to the config file, not the working directory.
 
 ## Configuring an Experiment
 
@@ -36,7 +41,7 @@ Everything is defined in a single `.xlsx` file with these sheets:
 | **Control Loops** | PID loops — process variable, setpoint, output channel, gains (Kp/Ki/Kd), auto/manual mode |
 | **Interlocks** | Safety rules — channel, condition/threshold, action (set output, disable loop, alarm) |
 | **Logging** | Which channels to log to CSV and display on the dashboard, with alarm thresholds |
-| **Settings** | Global options — sample rate, log subsample, buffer size, CSV filename |
+| **Settings** | Global options — sample rate, log subsample, buffer size, CSV filename, scatter plot channels, poll interval |
 
 Start by copying `example_config.xlsx` and editing to match your setup. The key relationships:
 
@@ -80,5 +85,5 @@ ifconfig | grep "inet " | grep -v 127.0.0.1
 
 ### Copy Files from Pi to Another Machine
 ```bash
-scp -r nitwit@192.168.0.23:/home/nitwit/lilac_box /Users/nitwit/Dropbox/LilacBox
+scp -r nitwit@192.168.0.23:/home/nitwit/lilac_systems /Users/nitwit/Dropbox/LilacBox
 ```
