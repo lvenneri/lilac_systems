@@ -1,5 +1,5 @@
 from flask import Flask, render_template, jsonify, request
-import csv, os, threading
+import argparse, csv, os, threading
 
 from config_loader import load_config
 from experiment_engine import ExperimentEngine
@@ -9,7 +9,12 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 # Load experiment config
 # ---------------------------------------------------------------------------
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'example_config.xlsx')
+parser = argparse.ArgumentParser(description="Sensor App")
+parser.add_argument("config", nargs="?",
+                    default=os.path.join(os.path.dirname(__file__), 'example_config.xlsx'),
+                    help="Path to experiment config .xlsx (default: example_config.xlsx)")
+args = parser.parse_args()
+CONFIG_PATH = args.config
 config = load_config(CONFIG_PATH)
 
 # Build SENSOR_UNITS from config channels (served to frontend via Jinja)

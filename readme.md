@@ -19,14 +19,57 @@ pip install -r requirements.txt
 ```bash
 source venv/bin/activate
 cd sensor_app
-python app.py
+python app.py                     # uses example_config.xlsx
+python app.py my_experiment.xlsx  # uses a custom config
 ```
 
 Open `http://<pi-ip>:5001` in a browser.
 
-## Documentation
+## Configuring an Experiment
 
-See [sensor_app/README.md](sensor_app/README.md) for full details on architecture, config format, API endpoints, and adding hardware drivers.
+Everything is defined in a single `.xlsx` file with these sheets:
+
+| Sheet | Purpose |
+|-------|---------|
+| **Instruments** | Each physical device (or simulated source) — type, address, poll rate |
+| **Channels** | I/O signals linked to instruments — name, direction, units, calibration (slope/offset), range |
+| **Control Loops** | PID loops — process variable, setpoint, output channel, gains (Kp/Ki/Kd), auto/manual mode |
+| **Interlocks** | Safety rules — channel, condition/threshold, action (set output, disable loop, alarm) |
+| **Logging** | Which channels to log to CSV and display on the dashboard, with alarm thresholds |
+| **Settings** | Global options — sample rate, log subsample, buffer size, CSV filename |
+
+Start by copying `example_config.xlsx` and editing to match your setup. The key relationships:
+
+```
+Instruments  ──1:N──▶  Channels  ──referenced by──▶  Control Loops
+                                                      Interlocks
+                                                      Logging
+```
+
+### Adding a Custom Hardware Driver
+
+1. Create a class extending `DriverBase` in `sensor_app/driver_base.py`:
+
+```python
+class MyDriver(DriverBase):
+    def connect(self):        ...  # open connection
+    def read_channel(self, channel_id):   ...  # return raw value
+    def write_channel(self, channel_id, value): ...  # write raw value
+    def close(self):          ...  # clean up
+```
+
+2. Register it in `DRIVER_REGISTRY`:
+
+```python
+DRIVER_REGISTRY = {
+    "simulated": SimulatedDriver,
+    "my_hardware": MyDriver,
+}
+```
+
+3. Set `Type` to `my_hardware` in the Instruments sheet of your config.
+
+See [sensor_app/README.md](sensor_app/README.md) for full column-by-column details, API endpoints, and dashboard features.
 
 ## Network Access
 

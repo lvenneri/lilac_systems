@@ -6,7 +6,8 @@ A config-driven experiment control and monitoring dashboard built with Flask and
 
 ```bash
 source ../venv/bin/activate
-python app.py
+python app.py                     # uses example_config.xlsx
+python app.py my_experiment.xlsx  # uses a custom config
 ```
 
 Open `http://<pi-ip>:5001` in a browser.
@@ -167,19 +168,11 @@ DRIVER_REGISTRY = {
 
 Then set `Type` to `my_hardware` in the Instruments sheet.
 
-### 3. Point app.py at your config
-
-Edit the `CONFIG_PATH` line in `app.py`:
-
-```python
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'my_experiment.xlsx')
-```
-
-### 4. Run
+### 3. Run
 
 ```bash
 source ../venv/bin/activate
-python app.py
+python app.py my_experiment.xlsx
 ```
 
 ## API Endpoints
