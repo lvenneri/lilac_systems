@@ -1,6 +1,0 @@
-{
-  "file_name": "data_{timestamp}.csv",
-  "sample_frequency_hz": "10",
-  "log_subsample": "10",
-  "append": false
-}

@@ -1,5 +1,0 @@
-nohup: ignoring input
-Traceback (most recent call last):
-  File "/home/nitwit/lilac_box/arduino_log_web.py", line 1, in <module>
-    import serial
-ModuleNotFoundError: No module named 'serial'

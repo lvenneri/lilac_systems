@@ -7,7 +7,8 @@
       "Bash(ls:*)",
       "Bash(python3:*)",
       "Bash(head:*)",
-      "Bash(/home/nitwit/lilac_box/venv/bin/pip freeze:*)"
+      "Bash(/home/nitwit/lilac_box/venv/bin/pip freeze:*)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }
