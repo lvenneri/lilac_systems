@@ -246,7 +246,7 @@ body.interlock-alarm #site_title::before {
 #site_title_card {
   border: 1px solid var(--border);
   width: fit-content;
-
+  margin-bottom: 0;
 }
 
 #site_header_row {
