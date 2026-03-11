@@ -362,11 +362,30 @@ body.interlock-alarm #site_title::before {
 /* ===== Buttons ===== */
 .btn-group-sm .btn,
 .btn-sm.toggle-panel,
-#dark_mode_toggle {
+#dark_mode_toggle,
+#save_figure_btn,
+#stop_btn {
   padding: 2px 8px;
   font-size: 0.85rem;
   border-radius: 0;
   line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#save_figure_btn {
+  min-width: 90px;
+}
+
+#stop_btn {
+  border-color: var(--indicator-mismatch);
+  color: var(--indicator-mismatch);
+  min-width: 72px;
+}
+
+#stop_btn:hover {
+  background-color: var(--indicator-mismatch);
+  color: var(--p-white, #fff);
 }
 
 /* ===== Drag and drop ===== */

@@ -1,5 +1,8 @@
 "use strict";
 let isDarkMode = false;
+let stopped = false;
+// Offset (ms) to align the header clock with server time: serverMs = Date.now() + serverTimeOffset
+let serverTimeOffset = 0;
 // Global parameter for number formatting
 const DECIMAL_POINTS = 2;
 
@@ -20,18 +23,20 @@ function readPlotTheme() {
 readPlotTheme();
 
 // Header clock
+let clockInterval = null;
 (function() {
   const el = document.getElementById("header_clock");
   if (!el) return;
   function tick() {
-    const d = new Date();
+    if (stopped) { clearInterval(clockInterval); return; }
+    const d = new Date(Date.now() + serverTimeOffset);
     const pad = (n, w) => String(n).padStart(w || 2, '0');
     el.textContent = d.getFullYear() + '/' + pad(d.getMonth()+1) + '/' + pad(d.getDate())
       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
       + '.' + pad(d.getMilliseconds(), 3);
   }
   tick();
-  setInterval(tick, 50);
+  clockInterval = setInterval(tick, 50);
 })();
 
 // sensorUnits is injected by the Jinja template before this script loads
@@ -948,6 +953,7 @@ let lastDataTimestamp = 0;
 let POLL_INTERVAL = 100; // Overridden by config if available
 
 function fetchSensorData() {
+  if (stopped) return;
   fetch('/data_since/' + lastDataTimestamp)
     .then(response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -993,6 +999,8 @@ function fetchSensorData() {
           });
         });
         lastDataTimestamp = samples[samples.length - 1].timestamp;
+        // Sync header clock to server time (server timestamp is seconds)
+        serverTimeOffset = lastDataTimestamp * 1000 - Date.now();
       }
 
       // Implement data retention limit
@@ -1218,4 +1226,259 @@ document.querySelectorAll('.dashboard-col').forEach(col => {
       this.appendChild(draggedElement);
     }
   });
+});
+
+// ===== Save Figure / Stop =====
+
+function generateTimestamp() {
+  const d = new Date();
+  const pad = (n, w) => String(n).padStart(w || 2, '0');
+  return d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate())
+    + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+}
+
+function downloadCanvas(canvas, filename) {
+  return new Promise(function(resolve) {
+    canvas.toBlob(function(blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      setTimeout(function() { URL.revokeObjectURL(url); resolve(); }, 200);
+    }, 'image/png');
+  });
+}
+
+/**
+ * Render the full time-series plot (ALL buffered data) to an offscreen canvas
+ * and trigger a PNG download.
+ */
+function saveFullTimeSeries(stamp) {
+  if (!plotInitialized || plotData[0].length < 2) return Promise.resolve();
+
+  // Group enabled series by unit (same logic as animTS draw)
+  const activeGroups = {};
+  for (let si = 0; si < numericSensors.length; si++) {
+    const key = numericSensors[si];
+    if (enabledSeries[key] === false) continue;
+    const unit = sensorUnits[key] || "?";
+    if (!activeGroups[unit]) activeGroups[unit] = [];
+    activeGroups[unit].push({ key, si });
+  }
+  const groupKeys = Object.keys(activeGroups);
+  const numGroups = groupKeys.length;
+  if (numGroups === 0) return Promise.resolve();
+
+  const SUBPLOT_H = 220;
+  const GAP = 12;
+  const PAD_LEFT = 60, PAD_RIGHT = 120, PAD_TOP = 16, PAD_BOTTOM = 40;
+  const W = 1600;
+  const H = PAD_TOP + PAD_BOTTOM + numGroups * SUBPLOT_H + (numGroups - 1) * GAP;
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = W;
+  offscreen.height = H;
+  const ctx = offscreen.getContext('2d');
+
+  // Background
+  const bgColor = isDarkMode ? '#1a1a2e' : '#ffffff';
+  const textColor = isDarkMode ? '#ccccdd' : '#333333';
+  const gridColor = isDarkMode ? '#2a2a4e' : '#eeeeee';
+  const axisColor = isDarkMode ? '#444444' : '#cccccc';
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+
+  // Full data range
+  const dataLen = plotData[0].length;
+  const tMin = plotData[0][0];
+  const tMax = plotData[0][dataLen - 1];
+  const tRange = tMax - tMin || 1;
+  const plotW = W - PAD_LEFT - PAD_RIGHT;
+  const mapX = (t) => PAD_LEFT + (t - tMin) / tRange * plotW;
+
+  // Downsample if too many points
+  let step = 1;
+  if (dataLen > 3000) step = Math.ceil(dataLen / 3000);
+
+  const totalGap = (numGroups - 1) * GAP;
+  const availH = H - PAD_TOP - PAD_BOTTOM - totalGap;
+  const subH = availH / numGroups;
+
+  for (let gi = 0; gi < numGroups; gi++) {
+    const unit = groupKeys[gi];
+    const seriesInGroup = activeGroups[unit];
+    const isBottom = (gi === numGroups - 1);
+
+    const spTop = PAD_TOP + gi * (subH + GAP);
+    const spBottom = spTop + subH;
+
+    // Y range
+    let yMin = Infinity, yMax = -Infinity;
+    for (const { si } of seriesInGroup) {
+      const arr = plotData[si + 1];
+      for (let i = 0; i < dataLen; i += step) {
+        const v = arr[i];
+        if (v != null && !isNaN(v)) {
+          if (v < yMin) yMin = v;
+          if (v > yMax) yMax = v;
+        }
+      }
+    }
+    if (!isFinite(yMin) || !isFinite(yMax)) continue;
+    const yPad = Math.max((yMax - yMin) * 0.08, 0.1);
+    yMin -= yPad;
+    yMax += yPad;
+
+    const localMapY = (v) => spTop + (1 - (v - yMin) / (yMax - yMin)) * subH;
+
+    // Separator
+    if (gi > 0) {
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD_LEFT, spTop - GAP / 2);
+      ctx.lineTo(W - PAD_RIGHT, spTop - GAP / 2);
+      ctx.stroke();
+    }
+
+    // Y axis
+    ctx.strokeStyle = axisColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD_LEFT, spTop);
+    ctx.lineTo(PAD_LEFT, spBottom);
+    if (isBottom) ctx.lineTo(W - PAD_RIGHT, spBottom);
+    ctx.stroke();
+
+    // Y ticks + grid
+    ctx.fillStyle = textColor;
+    ctx.font = "12px 'DIN', sans-serif";
+    ctx.textAlign = "right";
+    const yTicks = niceTicks(yMin, yMax, 4);
+    const yTickStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1;
+    for (const val of yTicks) {
+      const py = localMapY(val);
+      ctx.fillText(niceTickFormat(val, yTickStep), PAD_LEFT - 6, py + 4);
+      ctx.strokeStyle = gridColor;
+      ctx.beginPath();
+      ctx.moveTo(PAD_LEFT, py);
+      ctx.lineTo(W - PAD_RIGHT, py);
+      ctx.stroke();
+    }
+
+    // Unit label
+    ctx.save();
+    ctx.fillStyle = textColor;
+    ctx.font = "13px 'DIN', sans-serif";
+    ctx.textAlign = "center";
+    ctx.translate(14, (spTop + spBottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText("[" + unit + "]", 0, 0);
+    ctx.restore();
+
+    // X axis labels (bottom only)
+    if (isBottom) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = textColor;
+      ctx.font = "11px 'DIN', sans-serif";
+      const nTicksX = 8;
+      for (let i = 0; i <= nTicksX; i++) {
+        const t = tMin + (tMax - tMin) * i / nTicksX;
+        const d = new Date(t * 1000);
+        const label = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        ctx.fillText(label, mapX(t), spBottom + 18);
+      }
+    }
+
+    // Draw series
+    for (const { key, si } of seriesInGroup) {
+      const color = seriesColors[si % seriesColors.length];
+      const arr = plotData[si + 1];
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < dataLen; i += step) {
+        const v = arr[i];
+        if (v == null || isNaN(v)) continue;
+        const px = mapX(plotData[0][i]);
+        const py = localMapY(v);
+        if (!started) { ctx.moveTo(px, py); started = true; }
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+
+      // Label at right edge
+      const lastVal = arr[dataLen - 1];
+      if (lastVal != null && !isNaN(lastVal)) {
+        ctx.fillStyle = color;
+        ctx.font = "11px 'DIN', sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(key + " " + lastVal.toFixed(2), W - PAD_RIGHT + 6, localMapY(lastVal) + 4);
+      }
+    }
+  }
+
+  return downloadCanvas(offscreen, "timeseries_" + stamp + ".png");
+}
+
+/**
+ * Capture a screenshot of the full page and trigger a PNG download.
+ */
+function saveScreenshot(stamp) {
+  if (typeof html2canvas !== 'function') {
+    console.warn("html2canvas not loaded, skipping screenshot");
+    return Promise.resolve();
+  }
+  return html2canvas(document.body, {
+    backgroundColor: isDarkMode ? '#1a1a2e' : '#f8f9fa',
+    scale: 1,
+    useCORS: true,
+    logging: false,
+  }).then(function(canvas) {
+    return downloadCanvas(canvas, "screenshot_" + stamp + ".png");
+  });
+}
+
+/**
+ * Save both figures (time-series + screenshot).
+ */
+function saveFigures() {
+  const stamp = generateTimestamp();
+  return saveFullTimeSeries(stamp).then(function() {
+    // Small gap between downloads so the browser doesn't block the second one
+    return new Promise(function(resolve) { setTimeout(resolve, 300); });
+  }).then(function() {
+    return saveScreenshot(stamp);
+  });
+}
+
+// Save Figure button
+document.getElementById('save_figure_btn').addEventListener('click', function() {
+  this.disabled = true;
+  const btn = this;
+  saveFigures()
+    .catch(function(err) { console.warn("Save figure error:", err); })
+    .finally(function() {
+      btn.disabled = false;
+    });
+});
+
+// Stop button
+document.getElementById('stop_btn').addEventListener('click', function() {
+  this.disabled = true;
+  stopped = true;
+  saveFigures()
+    .catch(function(err) { console.warn("Save figure error:", err); })
+    .then(function() {
+      return new Promise(function(resolve) { setTimeout(resolve, 1000); });
+    }).then(function() {
+      return fetch('/stop', { method: 'POST' });
+    }).catch(function() {
+      // Server killed itself — expected
+    }).finally(function() {
+      document.title = 'Stopped';
+    });
 });

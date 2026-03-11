@@ -10,7 +10,8 @@
       "Bash(/home/nitwit/lilac_box/venv/bin/pip freeze:*)",
       "Bash(echo \"EXIT:$?\")",
       "Bash(grep -n \"function makeControlPanel\" /Users/nitwit/Dropbox/LilacBox/lilac_box/sensor_app/static/*.js)",
-      "Bash(git remote set-url origin https://github.com/lvenneri/lilac_systems.git)"
+      "Bash(git remote set-url origin https://github.com/lvenneri/lilac_systems.git)",
+      "Bash(grep -r / /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/*.py)"
     ]
   }
 }

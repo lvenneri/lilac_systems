@@ -224,6 +224,17 @@ def step_series_goto():
     return jsonify({"status": "ok"})
 
 
+@app.route('/stop', methods=['POST'])
+def stop_server():
+    """Stop the experiment engine and shut down the server."""
+    engine.stop()
+    def shutdown():
+        print("\nExperiment stopped.", flush=True)
+        os._exit(0)
+    threading.Timer(0.5, shutdown).start()
+    return jsonify({"status": "stopped"})
+
+
 if __name__ == '__main__':
     port = args.port
     if not args.no_browser:
