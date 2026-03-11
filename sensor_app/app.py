@@ -224,6 +224,12 @@ def step_series_goto():
     return jsonify({"status": "ok"})
 
 
+@app.route('/save_point', methods=['POST'])
+def save_point():
+    filename = engine.save_point()
+    return jsonify({"status": "ok", "file": filename})
+
+
 @app.route('/stop', methods=['POST'])
 def stop_server():
     """Stop the experiment engine and shut down the server."""

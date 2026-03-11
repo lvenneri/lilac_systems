@@ -259,23 +259,37 @@ body.interlock-alarm #site_title::before {
   color: var(--text-muted);
   letter-spacing: 0.5px;
   border: 1px solid var(--border);
-  padding: 4px 28px 4px 8px;
+  padding: 4px 8px;
   line-height: 1;
   height: calc(1.5rem + 2px);
   display: inline-flex;
   align-items: center;
-  position: relative;
-  overflow: hidden;
 }
 
-#header_clock::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
+#clock_pulse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 20px;
-  background: var(--border, #333);
+  height: calc(1.5rem + 2px);
+  border: 1px solid var(--btn-border, #6c757d);
+  border-left: none;
+  background: var(--btn-border, #6c757d);
+  animation: clock-pulse 1s infinite;
+}
+
+@keyframes clock-pulse {
+  0%, 100% { background: var(--btn-border, #6c757d); }
+  50% { background: var(--accent, #007bff); }
+}
+
+#clock_pulse.tripped {
+  animation-name: clock-pulse-tripped;
+}
+
+@keyframes clock-pulse-tripped {
+  0%, 100% { background: var(--btn-border, #6c757d); }
+  50% { background: var(--indicator-mismatch, #dc3545); }
 }
 
 #site_title_card .card-header {
@@ -363,6 +377,7 @@ body.interlock-alarm #site_title::before {
 .btn-group-sm .btn,
 .btn-sm.toggle-panel,
 #dark_mode_toggle,
+#save_point_btn,
 #save_figure_btn,
 #stop_btn {
   padding: 2px 8px;
@@ -371,6 +386,33 @@ body.interlock-alarm #site_title::before {
   line-height: 1.4;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+#save_point_btn {
+  border-right: none;
+}
+
+.save-point-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 2px 6px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background-color: var(--btn-border, #6c757d);
+  color: var(--card-bg, #fff);
+  border: 1px solid var(--btn-border, #6c757d);
+  border-left: none;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.save-point-counter.save-point-flash {
+  background-color: var(--accent, #007bff);
+  border-color: var(--accent, #007bff);
+  transition: none;
 }
 
 #save_figure_btn {

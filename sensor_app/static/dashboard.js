@@ -874,6 +874,7 @@ let controlConfig = {
   sliders: [],
   segments: [],
   textInputs: [
+    { key: "note", label: "Note", defaultValue: "" },
     { key: "file_name", label: "Log Filename", defaultValue: "junk.csv" },
     { key: "sample_frequency_hz", label: "Sample Freq (Hz)", defaultValue: 10 },
     { key: "log_subsample", label: "Log Subsample (N)", defaultValue: 10 }
@@ -1031,6 +1032,10 @@ function fetchSensorData() {
       }
       if (typeof updateInterlockStatus === 'function' && data.tripped_interlocks) {
         updateInterlockStatus(data.tripped_interlocks, data.sensors);
+        var pulse = document.getElementById('clock_pulse');
+        if (pulse) {
+          pulse.classList.toggle('tripped', data.tripped_interlocks.length > 0);
+        }
       }
       if (typeof updateOutputSliders === 'function' && data.sensors) {
         updateOutputSliders(data.sensors);
@@ -1458,6 +1463,30 @@ function saveScreenshot(stamp) {
 /**
  * Save both figures (time-series + screenshot).
  */
+// Save Point button
+let savePointCount = 0;
+document.getElementById('save_point_btn').addEventListener('click', function() {
+  const btn = this;
+  const noteEl = controls["note"];
+  const noteVal = noteEl ? noteEl.value : "";
+  fetch('/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: noteVal })
+  }).then(function() {
+    return fetch('/save_point', { method: 'POST' });
+  }).then(function(r) { return r.json(); })
+  .then(function(data) {
+    console.log("Point saved to", data.file);
+    savePointCount++;
+    const counter = document.getElementById('save_point_count');
+    counter.textContent = savePointCount;
+    counter.classList.add('save-point-flash');
+    setTimeout(function() { counter.classList.remove('save-point-flash'); }, 300);
+  })
+  .catch(function(err) { console.error("Save point error:", err); });
+});
+
 function saveFigures() {
   const stamp = generateTimestamp();
   return saveFullTimeSeries(stamp).then(function() {

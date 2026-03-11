@@ -32,7 +32,7 @@
             </div>
           </div>
           <div class="d-flex align-items-center ms-auto" id="site_header_buttons">
-            <span id="header_clock" class="me-2"></span>
+            <span id="header_clock"></span><span id="clock_pulse" class="me-2"></span>
             <div class="btn-group btn-group-sm me-2" role="group" id="panel_visibility_toggle">
               <button class="btn btn-outline-secondary" id="hide_all_panels">Hide All</button>
               <button class="btn btn-outline-secondary" id="show_all_panels">Show All</button>
@@ -42,7 +42,8 @@
               <button class="btn btn-outline-secondary" id="font_increase">+</button>
             </div>
             <button class="btn btn-sm btn-outline-secondary" id="dark_mode_toggle" title="Toggle dark mode">&#9789;</button>
-            <button class="btn btn-sm btn-outline-secondary ms-2" id="save_figure_btn" title="Save figure &amp; screenshot">Save Figure</button>
+            <button class="btn btn-sm btn-outline-secondary ms-2" id="save_point_btn" title="Save current readings to pts.csv">Save Point</button><span class="save-point-counter" id="save_point_count">0</span>
+            <button class="btn btn-sm btn-outline-secondary ms-1" id="save_figure_btn" title="Save figure &amp; screenshot">Save Figure</button>
             <button class="btn btn-sm btn-outline-danger ms-1" id="stop_btn" title="Save figure, finalize CSV &amp; stop">Stop</button>
           </div>
         </div>

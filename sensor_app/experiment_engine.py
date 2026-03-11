@@ -34,11 +34,15 @@ class ExperimentEngine:
         # Control settings from frontend (file_name, append, etc.)
         settings = config.get("settings", {})
         self.control_settings = {
+            "note": "",
             "file_name": str(settings.get("CSV Log File", "junk.csv")),
             "sample_frequency_hz": float(settings.get("Sample Frequency (Hz)", 10)),
             "log_subsample": int(settings.get("Log Subsample", 10)),
             "append": False,
         }
+
+        # Points CSV state
+        self.pts_fieldnames = None
 
         # CSV state
         self.file_initialized = False
@@ -263,6 +267,41 @@ class ExperimentEngine:
                 json.dump(ctrl, f, indent=2)
         except Exception:
             pass
+
+    def save_point(self):
+        """Save the latest readings as a single row to a pts.csv file."""
+        with self.command_lock:
+            ctrl = dict(self.control_settings)
+        with self.data_lock:
+            flat_sensors = dict(self.latest_readings)
+
+        csv_filename = ctrl.get("file_name", "junk.csv")
+        pts_filename = os.path.splitext(csv_filename)[0] + "_pts.csv"
+
+        now = time.time()
+        local = time.localtime(now)
+        ms = int((now % 1) * 1000)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", local) + f".{ms:03d}"
+
+        row = {"timestamp": timestamp, "note": ctrl.get("note", "")}
+        row.update(flat_sensors)
+
+        if self.pts_fieldnames is None:
+            self.pts_fieldnames = list(row.keys())
+
+        file_exists = os.path.isfile(pts_filename)
+        try:
+            with open(pts_filename, 'a', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.pts_fieldnames,
+                                        extrasaction='ignore')
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(row)
+                csvfile.flush()
+        except Exception as e:
+            print(f"Points CSV write error: {e}")
+
+        return pts_filename
 
     # ------------------------------------------------------------------
     # Main loop
