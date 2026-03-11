@@ -1,6 +1,8 @@
 # Lilac Systems
 
-A config-driven experiment control and monitoring dashboard built with Flask. Supports real-time plotting, PID control loops, safety interlocks, and CSV data logging. Designed to run on a Raspberry Pi.
+Config-driven experiment control and monitoring dashboard. Real-time plotting, PID control, safety interlocks, step sequences, and CSV logging. Runs on a Raspberry Pi or any machine with Python.
+
+![Dashboard screenshot](Screenshot.png)
 
 ## Setup
 
@@ -10,80 +12,78 @@ Requires Python 3.11+.
 git clone <repo-url>
 cd lilac_systems
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ## Run
 
 ```bash
-source venv/bin/activate
 cd sensor_app
-python app.py                              # uses example_config.xlsx, opens browser
-python app.py my_experiment.xlsx           # uses a custom config
-python app.py --port 8080                  # serve on a different port
-python app.py --no-browser                 # don't auto-open the browser
-python app.py --validate-only my.xlsx      # check config without starting the server
+python app.py                              # example_config.xlsx, opens browser
+python app.py my_experiment.xlsx           # custom config
+python app.py --port 8080                  # different port
+python app.py --no-browser                 # headless (navigate to http://<ip>:5001)
+python app.py --validate-only my.xlsx      # check config without starting
 ```
 
-The dashboard opens automatically in your browser. On a headless Pi, use `--no-browser` and navigate to `http://<pi-ip>:5001`.
+CSV files are written next to the config file. Use **Save Figure** in the header to export a time-series PNG and page screenshot. **Stop** saves figures, finalizes the CSV, and shuts down the server.
 
-CSV data files are written next to the config file, not the working directory.
+## Config
 
-## Configuring an Experiment
-
-Everything is defined in a single `.xlsx` file with these sheets:
+Everything lives in a single `.xlsx` file with these sheets:
 
 | Sheet | Purpose |
 |-------|---------|
-| **Instruments** | Each physical device (or simulated source) — type, address, poll rate |
-| **Channels** | I/O signals linked to instruments — name, direction, units, calibration (slope/offset), range |
-| **Control Loops** | PID loops — process variable, setpoint, output channel, gains (Kp/Ki/Kd), auto/manual mode |
-| **Interlocks** | Safety rules — channel, condition/threshold, action (set output, disable loop, alarm) |
-| **Logging** | Which channels to log to CSV and display on the dashboard, with alarm thresholds |
-| **Settings** | Global options — sample rate, log subsample, buffer size, CSV filename, scatter plot channels, poll interval |
+| **Instruments** | Devices or simulated sources — type, address, poll rate |
+| **Channels** | I/O signals — name, direction, units, calibration, range |
+| **Control Loops** | PID — PV, setpoint, output, gains, auto/manual mode |
+| **Interlocks** | Safety rules — channel, condition, threshold, action |
+| **Logging** | Channels to log and display, alarm thresholds |
+| **Settings** | Sample rate, buffer size, CSV filename, scatter plot channels |
 
-Start by copying `example_config.xlsx` and editing to match your setup. The key relationships:
+Copy `example_config.xlsx` and edit to match your setup.
 
 ```
-Instruments  ──1:N──▶  Channels  ──referenced by──▶  Control Loops
-                                                      Interlocks
-                                                      Logging
+Instruments ──1:N──> Channels ──referenced by──> Control Loops
+                                                  Interlocks
+                                                  Logging
 ```
 
-### Adding a Custom Hardware Driver
+Config is validated automatically on startup (or standalone with `--validate-only`). Validation checks cross-references between sheets, verifies driver types exist in the registry, and catches missing or invalid fields. Errors block startup; warnings are printed but allowed.
 
-1. Create a class extending `DriverBase` in `sensor_app/driver_base.py`:
+## Dashboard
+
+- **Time series** — per-unit subplots, 1min/30min window toggle, smooth interpolation
+- **Scatter plot** — configurable X/Y channels (set in Settings sheet)
+- **PID controls** — setpoint, mode (auto/manual), manual output override
+- **Step series** — auto/manual sequencing with settle detection and hold timers
+- **Output controls** — sliders and segmented buttons for output channels
+- **Interlocks** — live status with visual alarm on trip
+- **Header** — server-synced clock, panel visibility, font size, dark mode, save figure, stop
+
+## Custom Drivers
+
+Extend `DriverBase` in `sensor_app/driver_base.py`:
 
 ```python
 class MyDriver(DriverBase):
-    def connect(self):        ...  # open connection
-    def read_channel(self, channel_id):   ...  # return raw value
-    def write_channel(self, channel_id, value): ...  # write raw value
-    def close(self):          ...  # clean up
+    def connect(self):                        ...
+    def read_channel(self, channel_id):       ...
+    def write_channel(self, channel_id, val): ...
+    def close(self):                          ...
 ```
 
-2. Register it in `DRIVER_REGISTRY`:
+Register in `DRIVER_REGISTRY` and set `Type` in the Instruments sheet.
 
-```python
-DRIVER_REGISTRY = {
-    "simulated": SimulatedDriver,
-    "my_hardware": MyDriver,
-}
-```
-
-3. Set `Type` to `my_hardware` in the Instruments sheet of your config.
-
-See [sensor_app/README.md](sensor_app/README.md) for full column-by-column details, API endpoints, and dashboard features.
+See [sensor_app/README.md](sensor_app/README.md) for column-by-column details and API endpoints.
 
 ## Network Access
 
-### Get Raspberry Pi IP Address
 ```bash
+# Pi IP address
 ifconfig | grep "inet " | grep -v 127.0.0.1
-```
 
-### Copy Files from Pi to Another Machine
-```bash
-scp -r nitwit@192.168.0.23:/home/nitwit/lilac_systems /Users/nitwit/Dropbox/LilacBox
+# Copy files from Pi
+scp -r user@<pi-ip>:/home/user/lilac_systems ./
 ```

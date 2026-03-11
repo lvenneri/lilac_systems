@@ -630,8 +630,9 @@ const animTS = (function() {
       const fadeFrac = 0.15; // sigmoidal fade: 0 at 0%, full at 15%
       const fadeCutoffT = tMin + tRange * fadeFrac;
 
-      for (const { key, si } of seriesInGroup) {
-        const color = seriesColors[si % seriesColors.length];
+      for (let li = 0; li < seriesInGroup.length; li++) {
+        const { key, si } = seriesInGroup[li];
+        const color = seriesColors[li % seriesColors.length];
         const seriesArr = plotData[si + 1];
         const curVal = seriesCurrent[key];
 
@@ -726,6 +727,17 @@ function updateAnimatedTS() {
   animTS.pushValues(values, plotData[0][len - 1]);
 }
 
+function seriesColor(key, si) {
+  // Group by unit and return the index within that group
+  const unit = sensorUnits[key] || "?";
+  let idx = 0;
+  for (let i = 0; i < numericSensors.length; i++) {
+    if (numericSensors[i] === key) break;
+    if ((sensorUnits[numericSensors[i]] || "?") === unit) idx++;
+  }
+  return seriesColors[idx % seriesColors.length];
+}
+
 function updateLegend() {
   if (!plotInitialized) return;
   const legendBody = document.getElementById("legend_table_body");
@@ -734,7 +746,7 @@ function updateLegend() {
   numericSensors.forEach((key, idx) => {
     const value = len > 0 ? plotData[idx + 1][len - 1] : null;
     const displayValue = (value != null && !isNaN(value)) ? value.toFixed(DECIMAL_POINTS) : "-";
-    const color = seriesColors[idx % seriesColors.length];
+    const color = seriesColor(key, idx);
     const unit = sensorUnits[key] || "";
     html += `<tr><td style="color:${color}">${key}</td><td>${unit}</td><td>${displayValue}</td></tr>`;
   });
@@ -1392,8 +1404,9 @@ function saveFullTimeSeries(stamp) {
     }
 
     // Draw series
-    for (const { key, si } of seriesInGroup) {
-      const color = seriesColors[si % seriesColors.length];
+    for (let li = 0; li < seriesInGroup.length; li++) {
+      const { key, si } = seriesInGroup[li];
+      const color = seriesColors[li % seriesColors.length];
       const arr = plotData[si + 1];
 
       ctx.strokeStyle = color;
