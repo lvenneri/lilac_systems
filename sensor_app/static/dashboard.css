@@ -255,31 +255,27 @@ body.interlock-alarm #site_title::before {
 
 #header_clock {
   font-family: 'DIN', 'DIN Condensed', monospace;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   color: var(--text-muted);
   letter-spacing: 0.5px;
   border: 1px solid var(--border);
-  padding: 4px 8px;
-  line-height: 1;
-  height: calc(1.5rem + 2px);
+  padding: 2px 8px;
+  line-height: 1.4;
   display: inline-flex;
   align-items: center;
 }
 
 #clock_pulse {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
   width: 20px;
-  height: calc(1.5rem + 2px);
-  border: 1px solid var(--btn-border, #6c757d);
-  border-left: none;
-  background: var(--btn-border, #6c757d);
+  align-self: stretch;
+  border: none;
+  background: var(--border, #adb5bd);
   animation: clock-pulse 1s infinite;
 }
 
 @keyframes clock-pulse {
-  0%, 100% { background: var(--btn-border, #6c757d); }
+  0%, 100% { background: var(--border, #adb5bd); }
   50% { background: var(--accent, #007bff); }
 }
 
@@ -288,7 +284,7 @@ body.interlock-alarm #site_title::before {
 }
 
 @keyframes clock-pulse-tripped {
-  0%, 100% { background: var(--btn-border, #6c757d); }
+  0%, 100% { background: var(--border, #adb5bd); }
   50% { background: var(--indicator-mismatch, #dc3545); }
 }
 
@@ -377,6 +373,7 @@ body.interlock-alarm #site_title::before {
 .btn-group-sm .btn,
 .btn-sm.toggle-panel,
 #dark_mode_toggle,
+#clear_ts_btn,
 #save_point_btn,
 #save_figure_btn,
 #stop_btn {
@@ -389,7 +386,6 @@ body.interlock-alarm #site_title::before {
 }
 
 #save_point_btn {
-  border-right: none;
 }
 
 .save-point-counter {
@@ -402,16 +398,15 @@ body.interlock-alarm #site_title::before {
   line-height: 1.4;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background-color: var(--btn-border, #6c757d);
+  background-color: var(--border, #adb5bd);
   color: var(--card-bg, #fff);
   border: 1px solid var(--btn-border, #6c757d);
   border-left: none;
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  transition: background-color 0.3s ease;
 }
 
 .save-point-counter.save-point-flash {
   background-color: var(--accent, #007bff);
-  border-color: var(--accent, #007bff);
   transition: none;
 }
 

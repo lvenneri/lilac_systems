@@ -32,19 +32,23 @@
             </div>
           </div>
           <div class="d-flex align-items-center ms-auto" id="site_header_buttons">
-            <span id="header_clock"></span><span id="clock_pulse" class="me-2"></span>
-            <div class="btn-group btn-group-sm me-2" role="group" id="panel_visibility_toggle">
-              <button class="btn btn-outline-secondary" id="hide_all_panels">Hide All</button>
-              <button class="btn btn-outline-secondary" id="show_all_panels">Show All</button>
+            <div class="d-flex align-items-center me-4">
+              <div class="btn-group btn-group-sm me-2" role="group" id="panel_visibility_toggle">
+                <button class="btn btn-outline-secondary" id="hide_all_panels">Hide All</button>
+                <button class="btn btn-outline-secondary" id="show_all_panels">Show All</button>
+              </div>
+              <div class="btn-group btn-group-sm me-2" role="group" id="font_size_toggle">
+                <button class="btn btn-outline-secondary" id="font_decrease">−</button>
+                <button class="btn btn-outline-secondary" id="font_increase">+</button>
+              </div>
+              <button class="btn btn-sm btn-outline-secondary" id="dark_mode_toggle" title="Toggle dark mode">&#9789;</button>
             </div>
-            <div class="btn-group btn-group-sm me-2" role="group" id="font_size_toggle">
-              <button class="btn btn-outline-secondary" id="font_decrease">−</button>
-              <button class="btn btn-outline-secondary" id="font_increase">+</button>
+            <div class="d-flex align-items-center">
+              <span id="header_clock"></span><span id="clock_pulse" class="me-2"></span>
+              <button class="btn btn-sm btn-outline-secondary" id="save_point_btn" title="Save current readings to pts.csv">Save Pnt</button><span class="save-point-counter" id="save_point_count">0</span>
+              <button class="btn btn-sm btn-outline-secondary ms-1" id="save_figure_btn" title="Save figure &amp; screenshot">Save Fig</button>
+              <button class="btn btn-sm btn-outline-danger ms-1" id="stop_btn" title="Save figure, finalize CSV &amp; stop">Stop</button>
             </div>
-            <button class="btn btn-sm btn-outline-secondary" id="dark_mode_toggle" title="Toggle dark mode">&#9789;</button>
-            <button class="btn btn-sm btn-outline-secondary ms-2" id="save_point_btn" title="Save current readings to pts.csv">Save Point</button><span class="save-point-counter" id="save_point_count">0</span>
-            <button class="btn btn-sm btn-outline-secondary ms-1" id="save_figure_btn" title="Save figure &amp; screenshot">Save Figure</button>
-            <button class="btn btn-sm btn-outline-danger ms-1" id="stop_btn" title="Save figure, finalize CSV &amp; stop">Stop</button>
           </div>
         </div>
       </div>
@@ -90,6 +94,7 @@
               <div class="d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Time Series</h5>
                 <div class="d-flex align-items-center">
+                  <button class="btn btn-sm btn-outline-secondary me-2" id="clear_ts_btn">Clear</button>
                   <div class="btn-group btn-group-sm me-2" role="group" id="anim_ts_toggle">
                     <input type="radio" class="btn-check" name="anim_ts_option" id="anim_ts_30min" value="30min" autocomplete="off">
                     <label class="btn btn-outline-secondary" for="anim_ts_30min">30min</label>

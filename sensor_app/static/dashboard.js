@@ -350,7 +350,15 @@ const animScatter = (function() {
   resizeCanvas();
   requestAnimationFrame(draw);
 
-  return { pushTarget };
+  function clear() {
+    trail = [];
+    prevPoint = null;
+    targetPoint = null;
+    currentPoint = null;
+    lerpT = 1;
+  }
+
+  return { pushTarget, clear };
 })();
 
 function updateAnimatedScatter() {
@@ -1496,6 +1504,14 @@ function saveFigures() {
     return saveScreenshot(stamp);
   });
 }
+
+// Clear time series button
+document.getElementById('clear_ts_btn').addEventListener('click', function() {
+  for (var i = 0; i < plotData.length; i++) {
+    plotData[i] = [];
+  }
+  if (animScatter) animScatter.clear();
+});
 
 // Save Figure button
 document.getElementById('save_figure_btn').addEventListener('click', function() {
