@@ -410,6 +410,7 @@ body.interlock-alarm #site_title::before {
 .btn-group-sm .btn,
 .btn-sm.toggle-panel,
 #dark_mode_toggle,
+#mute_alarm_toggle,
 #clear_ts_btn,
 #save_point_btn,
 #save_figure_btn,

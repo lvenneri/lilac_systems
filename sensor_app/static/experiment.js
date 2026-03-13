@@ -6,6 +6,131 @@ let pidControls = {};       // loop_name -> { statusEls, spInput, modeRadios, ou
 let outputSliders = {};     // channel_name -> { type, slider/seg, ... }
 let interlocksDefs = [];    // interlock definitions from config
 let interlocksBuilt = false;
+let interlocksWereTripped = false;  // track previous state for beep edge-detection
+
+// Interlock alarm beep using Web Audio API
+// Browsers require a user gesture before AudioContext can produce sound.
+// We eagerly create and resume it on the first click/keydown.
+let _alarmAudioCtx = null;
+function _ensureAudioCtx() {
+  if (!_alarmAudioCtx) _alarmAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_alarmAudioCtx.state === 'suspended') _alarmAudioCtx.resume();
+  return _alarmAudioCtx;
+}
+document.addEventListener('click', _ensureAudioCtx, { once: true });
+document.addEventListener('keydown', _ensureAudioCtx, { once: true });
+let _alarmInterval = null;
+let _alarmMuted = false;
+let _alarmActive = false;  // true while interlocks are tripped (even if muted)
+
+function _startInterlockAlarm() {
+  _alarmActive = true;
+  _showMuteButton(true);
+  if (_alarmInterval || _alarmMuted) return;
+  _ensureAudioCtx();
+
+  function beep() {
+    if (_alarmMuted) return;
+    const ctx = _ensureAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 560;
+    osc.type = "sine";
+    gain.gain.value = 0.15;
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    osc.stop(ctx.currentTime + 0.25);
+  }
+
+  beep();
+  _alarmInterval = setInterval(beep, 1300);
+}
+
+function _stopInterlockAlarm() {
+  _alarmActive = false;
+  _alarmMuted = false;
+  _showMuteButton(false);
+  _updateMuteButtonIcon();
+  if (_alarmInterval) {
+    clearInterval(_alarmInterval);
+    _alarmInterval = null;
+  }
+}
+
+function _showMuteButton(show) {
+  const btn = document.getElementById('mute_alarm_toggle');
+  if (btn) btn.style.display = show ? '' : 'none';
+}
+
+const _svgSpeakerOn = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+const _svgSpeakerOff = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+
+function _updateMuteButtonIcon() {
+  const btn = document.getElementById('mute_alarm_toggle');
+  if (btn) btn.innerHTML = _alarmMuted ? _svgSpeakerOff : _svgSpeakerOn;
+}
+
+// Wire up mute button
+(function _wireMuteBtn() {
+  const btn = document.getElementById('mute_alarm_toggle');
+  if (!btn) { document.addEventListener('DOMContentLoaded', _wireMuteBtn); return; }
+  btn.addEventListener('click', function() {
+    _alarmMuted = !_alarmMuted;
+    _updateMuteButtonIcon();
+    if (_alarmMuted) {
+      if (_alarmInterval) { clearInterval(_alarmInterval); _alarmInterval = null; }
+    } else if (_alarmActive) {
+      _startInterlockAlarm();
+    }
+  });
+})();
+
+// Pleasant chime for step hold start / end
+function _playChime(type) {
+  if (_alarmMuted) return;
+  const ctx = _ensureAudioCtx();
+  const now = ctx.currentTime;
+
+  if (type === "hold_start") {
+    // Two-note ascending chime (C5 → E5)
+    [523.25, 659.25].forEach(function(freq, i) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.value = 0;
+      gain.gain.setValueAtTime(0, now + i * 0.15);
+      gain.gain.linearRampToValueAtTime(0.12, now + i * 0.15 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.15 + 0.4);
+      osc.start(now + i * 0.15);
+      osc.stop(now + i * 0.15 + 0.4);
+    });
+  } else if (type === "hold_end") {
+    // Three-note ascending ta-da (C5 → E5 → G5)
+    [523.25, 659.25, 783.99].forEach(function(freq, i) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.value = 0;
+      gain.gain.setValueAtTime(0, now + i * 0.12);
+      gain.gain.linearRampToValueAtTime(0.12, now + i * 0.12 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.5);
+      osc.start(now + i * 0.12);
+      osc.stop(now + i * 0.12 + 0.5);
+    });
+  }
+}
+
+let _prevStepSettled = null;
+let _prevStepIndex = null;
+let _prevStepRunning = null;
 
 // ---------------------------------------------------------------------------
 // Fetch config once on page load
@@ -519,6 +644,14 @@ function updateInterlockStatus(trippedList, sensors) {
   const panel = document.querySelector('[data-panel-id="interlocks"]');
   if (panel) panel.classList.toggle("interlock-alarm", anyTripped);
   document.body.classList.toggle("interlock-alarm", anyTripped);
+
+  // Beep alarm: start on rising edge, stop when cleared
+  if (anyTripped && !interlocksWereTripped) {
+    _startInterlockAlarm();
+  } else if (!anyTripped && interlocksWereTripped) {
+    _stopInterlockAlarm();
+  }
+  interlocksWereTripped = anyTripped;
 }
 
 // ---------------------------------------------------------------------------
@@ -770,8 +903,26 @@ function updateStepSeriesStatus(status) {
     }
   }
 
-  // Update timer — show settling state
+  // Chime on hold transitions
   const settled = status.settled;
+  if (status.running) {
+    if (settled && _prevStepSettled === false) {
+      _playChime("hold_start");
+    }
+    if (_prevStepIndex !== null && status.current_step !== _prevStepIndex) {
+      _playChime("hold_end");
+    }
+  }
+  // Last step finished: was running, now stopped, on final step
+  if (_prevStepRunning === true && !status.running &&
+      status.current_step === status.total_steps - 1) {
+    _playChime("hold_end");
+  }
+  _prevStepSettled = settled;
+  _prevStepIndex = status.current_step;
+  _prevStepRunning = status.running;
+
+  // Update timer — show settling state
   const elapsed = status.hold_elapsed || 0;
   const total = status.hold_total || 0;
   if (status.running && !settled) {

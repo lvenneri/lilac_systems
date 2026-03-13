@@ -103,11 +103,11 @@ const scifiLight = ["#6FBFBF","#B07CC3","#D4896A","#8AA86E","#5B94C6","#C4A24E",
 const scifiDark  = ["#8EDADA","#C99ADB","#E8A585","#A6C888","#7BB2E0","#DBBE68","#DB8DA2","#9AACBC"];
 
 // Tactical console (mixed categorical)
-const tacticalLight = ["#f0b444","#C43B3B","#1E88E5","#C476A8","#E8A54E","#D46A4A","#A09878","#4A6A3E"];
-const tacticalDark  = ["#ffce73","#E84848","#1E88E5","#E08CBC","#f9f93c","#E8845E","#C4B898","#6A9050"];
+const tacticalLight = ["#C43B3B","#1E88E5","#f0b444","#C476A8","#E8A54E","#D46A4A","#A09878","#4A6A3E"];
+const tacticalDark  = ["#fb4040","#1E88E5","#ffce73","#E08CBC","#f9ec3c","#E8845E","#C4B898","#6A9050"];
 
 // --- Selector ---
-const palette = "tactical"; // "amber" | "blue" | "gray" | "scifi" | "tactical"
+const palette = "scifi"; // "amber" | "blue" | "gray" | "scifi" | "tactical"
 
 const palettes = {
   amber:    { light: amberLight,    dark: amberDark },
