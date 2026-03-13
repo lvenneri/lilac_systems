@@ -22,7 +22,7 @@
   --p-mid-gray:     #6c757d;      /* Bootstrap secondary */
   --p-light-gray:   #ddd;
   --p-pale-gray:    #e8e8e8;
-  --p-blue:         #4377df;
+  --p-blue:        #0d71dc;
   --p-silver:       #ccc;
 
   /* Surfaces */
@@ -80,22 +80,27 @@
   --plot-tick:        #888;
   --plot-label:       #666;
   --plot-trail:       150, 150, 150;
+
+  /* Pulse blinker */
+  --pulse-base:       var(--border);
+  --pulse-peak:       var(--accent);
 }
 
 body.dark-mode {
   /* ── Palette ── */
-  --p-light:        #e0e0e0;
-  --p-cool:         #c0c0d0;
+  --p-light:        #ffffff;
+  --p-cool:         #e3580c; /* e3580c border and pattern */
+
   --p-dim:          #a0a0b0;
   --p-ink:         var(--p-cool);
-  --p-vivid-blue:   #4a6aff;
+  --p-vivid-blue:   #3964ff;
   --p-charcoal:     #444444;
   --p-navy:         #16213e;
 
   /* Surfaces */
-  --bg:               #1a1a2e;
-  --card-bg:          var(--p-navy);
-  --card-header-bg:   linear-gradient(to bottom, #1a1a3e 0%, var(--p-navy) 100%);
+  --bg:               #000000;
+  --card-bg:          var(--bg);
+  --card-header-bg:   000000; /*linear-gradient(to bottom, #1a1a3e 0%, var(--p-navy) 100%);
 
   /* Text */
   --text:             var(--p-light);
@@ -118,7 +123,7 @@ body.dark-mode {
   --btn-hover-bg:     var(--p-ink);
   --btn-hover-text:   var(--p-light);
   --btn-active-bg:    var(--p-ink);
-  --btn-active-text:  var(--p-light);
+  --btn-active-text:  var(--bg);
   --btn-active-border:#4a4a6a;
 
   /* Controls */
@@ -137,7 +142,7 @@ body.dark-mode {
   --input-border:     #c6c6c8;
 
   /* Indicators */
-  --indicator-match:    var(--p-vivid-blue);
+  --indicator-match:    var(--vivid);
   --indicator-mismatch: #ff4444;
 
   /* Plot chrome */
@@ -147,6 +152,10 @@ body.dark-mode {
   --plot-tick:        #999;
   --plot-label:       #aaa;
   --plot-trail:       150, 150, 150;
+
+  /* Pulse blinker */
+  --pulse-base:       var(--bg);
+  --pulse-peak:       var(--p-blue);
 }
 
 /* ===== Base layout ===== */
@@ -253,6 +262,25 @@ body.interlock-alarm #site_title::before {
   margin-bottom: 10px;
 }
 
+#screen_hz,
+#instrument_hz {
+  font-family: 'DIN', 'DIN Condensed', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.x-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-strong);
+  user-select: none;
+}
+
 #header_clock {
   font-family: 'DIN', 'DIN Condensed', monospace;
   font-size: 0.85rem;
@@ -274,9 +302,14 @@ body.interlock-alarm #site_title::before {
   animation: clock-pulse 1s infinite;
 }
 
+#clock_pulse.dead {
+  animation: none;
+  background: var(--border, #adb5bd);
+}
+
 @keyframes clock-pulse {
-  0%, 100% { background: var(--border, #adb5bd); }
-  50% { background: var(--accent, #007bff); }
+  0%, 100% { background: var(--pulse-base); }
+  50% { background: var(--pulse-peak); }
 }
 
 #clock_pulse.tripped {
@@ -342,6 +375,10 @@ body.interlock-alarm #site_title::before {
 
 .panel-body-collapsible > * {
   margin: 12px;
+}
+
+#animated_scatter_body > canvas {
+  margin: 0 0 12px 12px;
 }
 
 .panel-body-collapsible.collapsed {

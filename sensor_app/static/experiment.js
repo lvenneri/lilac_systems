@@ -692,7 +692,9 @@ function updateStepSeriesStatus(status) {
   const cooldown = (Date.now() - stepSeriesLastAction) < 1500;
 
   // Update step indicator
-  ui.indicator.textContent = "Step " + (status.current_step + 1) + " / " + status.total_steps;
+  var stepLabel = "Step " + (status.current_step + 1) + " / " + status.total_steps;
+  if (status.step_name) stepLabel += "  —  " + status.step_name;
+  ui.indicator.textContent = stepLabel;
 
   // Update per-control settled indicator dots + dimming
   var settledCols = status.settled_cols || {};
@@ -757,11 +759,15 @@ function updateStepSeriesStatus(status) {
       ui.modeRadios[status.mode].checked = true;
     }
 
-    // Update play/pause button
-    const svgPlayIcon = '<svg width="14" height="14" viewBox="0 0 14 14"><polygon points="3,1 13,7 3,13" fill="currentColor"/></svg>';
-    const svgPauseIcon = '<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="1.5" width="3.5" height="11" rx="0.5" fill="currentColor"/><rect x="8.5" y="1.5" width="3.5" height="11" rx="0.5" fill="currentColor"/></svg>';
-    ui.playPauseBtn.innerHTML = status.running ? svgPauseIcon : svgPlayIcon;
-    ui.playPauseBtn.classList.toggle("playing", status.running);
+    // Update play/pause button only when state actually changes
+    // (replacing innerHTML every poll kills in-flight click events)
+    const isPlaying = ui.playPauseBtn.classList.contains("playing");
+    if (status.running !== isPlaying) {
+      const svgPlayIcon = '<svg width="14" height="14" viewBox="0 0 14 14"><polygon points="3,1 13,7 3,13" fill="currentColor"/></svg>';
+      const svgPauseIcon = '<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="1.5" width="3.5" height="11" rx="0.5" fill="currentColor"/><rect x="8.5" y="1.5" width="3.5" height="11" rx="0.5" fill="currentColor"/></svg>';
+      ui.playPauseBtn.innerHTML = status.running ? svgPauseIcon : svgPlayIcon;
+      ui.playPauseBtn.classList.toggle("playing", status.running);
+    }
   }
 
   // Update timer — show settling state

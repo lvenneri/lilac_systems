@@ -26,10 +26,8 @@ class ExperimentEngine:
         buf_size = int(config.get("settings", {}).get("Data Buffer Size", 10000))
         self.sample_buffer = collections.deque(maxlen=buf_size)
 
-        # Locks (same 3-lock pattern as original app.py)
-        self.data_lock = threading.Lock()
-        self.buffer_lock = threading.Lock()
-        self.command_lock = threading.Lock()
+        # Single lock protects all shared state (data, buffer, commands)
+        self._lock = threading.Lock()
 
         # Control settings from frontend (file_name, append, etc.)
         settings = config.get("settings", {})
@@ -43,10 +41,18 @@ class ExperimentEngine:
 
         # Points CSV state
         self.pts_fieldnames = None
+        self._pts_first_write = True  # overwrite on first save each session
 
-        # CSV state
+        # CSV state — persistent file handle
         self.file_initialized = False
         self.csv_fieldnames = None
+        self._csv_file = None       # persistent file object
+        self._csv_writer = None     # persistent DictWriter
+        self._csv_filename = None   # tracks current filename for reopen
+
+        # Pre-computed channel lists (populated in initialize())
+        self._input_channels = []   # [(ch_name, driver, channel_id, slope, offset)]
+        self._output_channels = []  # [(ch_name, ch_cfg)]
 
         # Step series state
         self.step_series = config.get("step_series", [])
@@ -59,8 +65,22 @@ class ExperimentEngine:
         self.step_hold_elapsed = 0.0
         self.step_hold_total = self.step_series[0]["hold_time"] if self.step_series else 0.0
         self._step_last_tick = None  # wall-clock time of last hold tick
+        self.saved_points = []  # [{x, y, label}, ...] for scatter overlay
 
         self._running = False
+
+    # Backward-compat aliases so external code (app.py) using the old lock names still works
+    @property
+    def command_lock(self):
+        return self._lock
+
+    @property
+    def data_lock(self):
+        return self._lock
+
+    @property
+    def buffer_lock(self):
+        return self._lock
 
     def initialize(self):
         """Create drivers and PID controllers from config."""
@@ -88,6 +108,20 @@ class ExperimentEngine:
             if il.get("enabled", True)
         ]
 
+        # Pre-compute channel lists for fast iteration in hot loop
+        for ch_name, ch_cfg in self.config.get("channels", {}).items():
+            if not ch_cfg.get("enabled", True):
+                continue
+            if ch_cfg["direction"] == "input":
+                driver = self.drivers.get(ch_cfg["instrument"])
+                if driver is not None:
+                    self._input_channels.append((
+                        ch_name, driver, ch_cfg["channel_id"],
+                        ch_cfg.get("slope", 1), ch_cfg.get("offset", 0),
+                    ))
+            elif ch_cfg["direction"] == "output":
+                self._output_channels.append((ch_name, ch_cfg))
+
         # Apply first step setpoints since we start in auto mode
         if self.step_series and self.step_mode == "auto":
             self._apply_step_setpoints(self.step_series[0])
@@ -99,18 +133,8 @@ class ExperimentEngine:
     def _read_all_channels(self):
         """Read all enabled input channels, apply slope/offset scaling."""
         readings = {}
-        channels = self.config.get("channels", {})
-        for ch_name, ch_cfg in channels.items():
-            if not ch_cfg.get("enabled", True):
-                continue
-            if ch_cfg["direction"] != "input":
-                continue
-            driver = self.drivers.get(ch_cfg["instrument"])
-            if driver is None:
-                continue
-            raw = driver.read_channel(ch_cfg["channel_id"])
-            slope = ch_cfg.get("slope", 1)
-            offset = ch_cfg.get("offset", 0)
+        for ch_name, driver, channel_id, slope, offset in self._input_channels:
+            raw = driver.read_channel(channel_id)
             readings[ch_name] = raw * slope + offset
         return readings
 
@@ -223,6 +247,38 @@ class ExperimentEngine:
     # CSV logging
     # ------------------------------------------------------------------
 
+    def _open_csv(self, filename, append):
+        """Open (or reopen) the CSV file and write the header if needed."""
+        self._close_csv()
+        self._csv_filename = filename
+        file_exists = os.path.isfile(filename)
+        mode = 'a' if append else 'w'
+        self._csv_file = open(filename, mode, newline='')
+        self._csv_writer = csv.DictWriter(
+            self._csv_file, fieldnames=self.csv_fieldnames, extrasaction='ignore')
+        if not append or not file_exists:
+            self._csv_writer.writeheader()
+            self._csv_file.flush()
+
+    def _close_csv(self):
+        """Close the persistent CSV file handle if open."""
+        if self._csv_file is not None:
+            try:
+                self._csv_file.flush()
+                self._csv_file.close()
+            except Exception:
+                pass
+            self._csv_file = None
+            self._csv_writer = None
+            self._csv_filename = None
+
+    def _get_step_info(self):
+        """Return current step name and settled state for CSV columns."""
+        if self.step_series and self.step_current < len(self.step_series):
+            step = self.step_series[self.step_current]
+            return step.get("name", ""), self.step_settled
+        return "", False
+
     def _log_to_csv(self, flat_sensors, ctrl):
         filename = ctrl.get("file_name", "junk.csv")
         append = ctrl.get("append", False)
@@ -232,32 +288,26 @@ class ExperimentEngine:
         ms = int((now % 1) * 1000)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", local) + f".{ms:03d}"
 
-        row = {"timestamp": timestamp}
+        step_name, settled = self._get_step_info()
+        row = {"timestamp": timestamp, "Step Name": step_name, "Hold Stable": settled}
         row.update(flat_sensors)
 
         if self.csv_fieldnames is None:
             self.csv_fieldnames = list(row.keys())
 
-        need_init = not self.file_initialized
-        if need_init:
-            self.file_initialized = True
-
-        mode = 'a'
-        header_needed = False
-        if need_init:
-            mode = 'a' if append else 'w'
-            header_needed = True
-
-        file_exists = os.path.isfile(filename)
         try:
-            with open(filename, mode, newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames, extrasaction='ignore')
-                if header_needed or not file_exists:
-                    writer.writeheader()
-                writer.writerow(row)
-                csvfile.flush()
+            # (Re)open if needed: first write, filename changed, or file was closed
+            if (self._csv_writer is None or
+                    not self.file_initialized or
+                    self._csv_filename != filename):
+                self._open_csv(filename, append)
+                self.file_initialized = True
+
+            self._csv_writer.writerow(row)
+            self._csv_file.flush()
         except Exception as e:
             print(f"CSV write error: {e}")
+            self._close_csv()  # force reopen on next cycle
 
     def _save_config(self, ctrl):
         csv_filename = ctrl.get("file_name", "junk.csv")
@@ -268,12 +318,15 @@ class ExperimentEngine:
         except Exception:
             pass
 
-    def save_point(self):
+    def save_point(self, label=None, readings=None):
         """Save the latest readings as a single row to a pts.csv file."""
         with self.command_lock:
             ctrl = dict(self.control_settings)
-        with self.data_lock:
-            flat_sensors = dict(self.latest_readings)
+        if readings is not None:
+            flat_sensors = dict(readings)
+        else:
+            with self.data_lock:
+                flat_sensors = dict(self.latest_readings)
 
         csv_filename = ctrl.get("file_name", "junk.csv")
         pts_filename = os.path.splitext(csv_filename)[0] + "_pts.csv"
@@ -283,23 +336,33 @@ class ExperimentEngine:
         ms = int((now % 1) * 1000)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", local) + f".{ms:03d}"
 
-        row = {"timestamp": timestamp, "note": ctrl.get("note", "")}
+        # Determine label for scatter overlay
+        if label is None:
+            label = ctrl.get("note", "") or str(len(self.saved_points) + 1)
+
+        step_name, settled = self._get_step_info()
+        row = {"timestamp": timestamp, "note": ctrl.get("note", ""),
+               "Step Name": step_name, "Hold Stable": settled}
         row.update(flat_sensors)
 
         if self.pts_fieldnames is None:
             self.pts_fieldnames = list(row.keys())
 
-        file_exists = os.path.isfile(pts_filename)
+        mode = 'w' if self._pts_first_write else 'a'
         try:
-            with open(pts_filename, 'a', newline='') as csvfile:
+            with open(pts_filename, mode, newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=self.pts_fieldnames,
                                         extrasaction='ignore')
-                if not file_exists:
+                if self._pts_first_write:
                     writer.writeheader()
                 writer.writerow(row)
                 csvfile.flush()
+            self._pts_first_write = False
         except Exception as e:
             print(f"Points CSV write error: {e}")
+
+        # Record for scatter overlay (epoch timestamp lets frontend look up plotData)
+        self.saved_points.append({"timestamp": now, "sensors": dict(flat_sensors), "label": label})
 
         return pts_filename
 
@@ -330,7 +393,19 @@ class ExperimentEngine:
             # 3. Run PID loops
             pid_status = self._run_pid_loops(readings)
 
-            # 3.5. Step series — always update settled state; advance only when running
+            # 4. Build flat sensor dict (channels + PID virtual channels)
+            flat_sensors = dict(readings)
+            # Also include output channel values (pre-computed list)
+            for ch_name, ch_cfg in self._output_channels:
+                flat_sensors[ch_name] = self._read_output_value(ch_name)
+
+            for loop_name, status in pid_status.items():
+                flat_sensors[f"pid.{loop_name}.setpoint"] = status["setpoint"]
+                flat_sensors[f"pid.{loop_name}.pv"] = status["pv"]
+                flat_sensors[f"pid.{loop_name}.output"] = status["output"]
+                flat_sensors[f"pid.{loop_name}.error"] = status["error"]
+
+            # 4.5. Step series — always update settled state; advance only when running
             if self.step_mode == "auto" and len(self.step_series) > 0:
                 self.step_settled = self._check_step_settled(readings)
                 if self.step_running and self.step_settled:
@@ -339,6 +414,9 @@ class ExperimentEngine:
                         self.step_hold_elapsed += dt
                     self._step_last_tick = now
                     if self.step_hold_elapsed >= self.step_hold_total:
+                        step = self.step_series[self.step_current]
+                        step_label = step.get("name") or str(step.get("step_num", self.step_current + 1))
+                        self.save_point(label=step_label, readings=flat_sensors)
                         next_idx = self.step_current + 1
                         if next_idx < len(self.step_series):
                             self._go_to_step(next_idx)
@@ -347,32 +425,14 @@ class ExperimentEngine:
                 else:
                     self._step_last_tick = None
 
-            # 4. Build flat sensor dict (channels + PID virtual channels)
-            flat_sensors = dict(readings)
-            # Also include output channel values
-            for ch_name, ch_cfg in self.config.get("channels", {}).items():
-                if ch_cfg["direction"] == "output" and ch_cfg.get("enabled", True):
-                    flat_sensors[ch_name] = self._read_output_value(ch_name)
-
-            for loop_name, status in pid_status.items():
-                flat_sensors[f"pid.{loop_name}.setpoint"] = status["setpoint"]
-                flat_sensors[f"pid.{loop_name}.pv"] = status["pv"]
-                flat_sensors[f"pid.{loop_name}.output"] = status["output"]
-                flat_sensors[f"pid.{loop_name}.error"] = status["error"]
-
-            # 5. Store latest + buffer
-            with self.data_lock:
+            # 5. Store latest + buffer + read control settings (single lock)
+            with self._lock:
                 self.latest_readings = flat_sensors
                 self.latest_pid_status = pid_status
-
-            with self.buffer_lock:
                 self.sample_buffer.append({
                     "timestamp": now,
                     "sensors": flat_sensors,
                 })
-
-            # 6. CSV logging
-            with self.command_lock:
                 ctrl = dict(self.control_settings)
 
             subsample = log_subsample_default
@@ -399,6 +459,7 @@ class ExperimentEngine:
 
     def stop(self):
         self._running = False
+        self._close_csv()
         for d in self.drivers.values():
             d.close()
 
@@ -408,26 +469,24 @@ class ExperimentEngine:
 
     def get_data_since(self, since):
         """Return samples since timestamp, plus latest readings, PID status, controls."""
-        with self.buffer_lock:
+        with self._lock:
             samples = []
             for s in reversed(self.sample_buffer):
                 if s["timestamp"] <= since:
                     break
                 samples.append(s)
             samples.reverse()
-
-        with self.data_lock:
             readings = dict(self.latest_readings)
             pid_status = dict(self.latest_pid_status)
-
-        with self.command_lock:
             ctrl = dict(self.control_settings)
 
         step_status = {}
         if len(self.step_series) > 0:
+            current_step = self.step_series[self.step_current] if self.step_current < len(self.step_series) else {}
             step_status = {
                 "current_step": self.step_current,
                 "total_steps": len(self.step_series),
+                "step_name": current_step.get("name", ""),
                 "mode": self.step_mode,
                 "running": self.step_running,
                 "settled": self.step_settled,
@@ -443,6 +502,7 @@ class ExperimentEngine:
             "controls": ctrl,
             "tripped_interlocks": list(self.tripped_interlocks),
             "step_series": step_status,
+            "saved_points": list(self.saved_points),
         }
 
     def update_settings(self, data):

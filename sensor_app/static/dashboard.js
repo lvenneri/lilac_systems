@@ -6,6 +6,27 @@ let serverTimeOffset = 0;
 // Global parameter for number formatting
 const DECIMAL_POINTS = 2;
 
+// Hz counters
+let screenFrameCount = 0;
+let instrumentFetchCount = 0;
+let hzLastUpdate = performance.now();
+(function updateHz() {
+  const now = performance.now();
+  const elapsed = (now - hzLastUpdate) / 1000;
+  if (elapsed >= 1) {
+    const sHz = Math.round(screenFrameCount / elapsed);
+    const iHz = (instrumentFetchCount / elapsed).toFixed(1);
+    const sEl = document.getElementById('screen_hz');
+    const iEl = document.getElementById('instrument_hz');
+    if (sEl) sEl.textContent = sHz + ' Hz';
+    if (iEl) iEl.textContent = iHz + ' Hz';
+    screenFrameCount = 0;
+    instrumentFetchCount = 0;
+    hzLastUpdate = now;
+  }
+  if (!stopped) requestAnimationFrame(updateHz);
+})();
+
 // Plot chrome colours — read from CSS custom properties so both themes
 // are defined in dashboard.css.  Refreshed on dark-mode toggle.
 let plotTheme = {};
@@ -28,7 +49,12 @@ let clockInterval = null;
   const el = document.getElementById("header_clock");
   if (!el) return;
   function tick() {
-    if (stopped) { clearInterval(clockInterval); return; }
+    if (stopped) {
+      clearInterval(clockInterval);
+      var p = document.getElementById('clock_pulse');
+      if (p) p.classList.add('dead');
+      return;
+    }
     const d = new Date(Date.now() + serverTimeOffset);
     const pad = (n, w) => String(n).padStart(w || 2, '0');
     el.textContent = d.getFullYear() + '/' + pad(d.getMonth()+1) + '/' + pad(d.getDate())
@@ -59,8 +85,43 @@ let enabledSeries = {};
 let numericSensors = [];
 let plotInitialized = false;
 
-// Color palette for plot series
-const seriesColors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'cyan', 'magenta'];
+
+// Amber
+const amberLight = ["#FFF3E0","#FFE0B2","#FFCC80","#FFB74D","#FFA726","#F59016","#C46A08","#8C4503"];
+const amberDark  = ["#8C4503","#A35504","#C46A08","#DA7C0E","#F59016","#FFA726","#FFB74D","#FFCC80"];
+
+// Blue
+const blueLight = ["#E3F2FD","#BBDEFB","#90CAF9","#64B5F6","#42A5F5","#1E88E5","#1565C0","#0D47A1"];
+const blueDark  = ["#0D47A1","#1256B8","#1565C0","#1976D2","#1E88E5","#42A5F5","#64B5F6","#90CAF9"];
+
+// Gray
+const grayLight = ["#F5F5F5","#E0E0E0","#BDBDBD","#9E9E9E","#757575","#616161","#424242","#2B2B2B"];
+const grayDark  = ["#2B2B2B","#373737","#424242","#545454","#616161","#757575","#9E9E9E","#BDBDBD"];
+
+// Soft sci-fi (mixed categorical)
+const scifiLight = ["#6FBFBF","#B07CC3","#D4896A","#8AA86E","#5B94C6","#C4A24E","#C77088","#7E8C9A"];
+const scifiDark  = ["#8EDADA","#C99ADB","#E8A585","#A6C888","#7BB2E0","#DBBE68","#DB8DA2","#9AACBC"];
+
+// Tactical console (mixed categorical)
+const tacticalLight = ["#f0b444","#C43B3B","#1E88E5","#C476A8","#E8A54E","#D46A4A","#A09878","#4A6A3E"];
+const tacticalDark  = ["#ffce73","#E84848","#1E88E5","#E08CBC","#f9f93c","#E8845E","#C4B898","#6A9050"];
+
+// --- Selector ---
+const palette = "tactical"; // "amber" | "blue" | "gray" | "scifi" | "tactical"
+
+const palettes = {
+  amber:    { light: amberLight,    dark: amberDark },
+  blue:     { light: blueLight,     dark: blueDark },
+  gray:     { light: grayLight,     dark: grayDark },
+  scifi:    { light: scifiLight,    dark: scifiDark },
+  tactical: { light: tacticalLight, dark: tacticalDark },
+};
+
+const seriesColorsLight = palettes[palette].light;
+const seriesColorsDark  = palettes[palette].dark;
+
+
+function getSeriesColors() { return isDarkMode ? seriesColorsDark : seriesColorsLight; }
 
 // Initialize plot (discovers sensors, sets plotInitialized)
 function initializePlot() {
@@ -116,11 +177,15 @@ const animScatter = (function() {
   let currentBounds = { minX: 20, maxX: 30, minY: 40, maxY: 80 };
   let targetBounds = { minX: 20, maxX: 30, minY: 40, maxY: 80 };
 
+  // Cached visible points — rebuilt on new data, reused across frames
+  let cachedVisiblePts = null;
+  let cachedVisibleBounds = null;
+
   // Layout constants
   const PAD_LEFT = 50;
   const PAD_BOTTOM = 40;
-  const PAD_TOP = 15;
-  const PAD_RIGHT = 15;
+  const PAD_TOP = 0;
+  const PAD_RIGHT = 0;
 
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
@@ -135,9 +200,11 @@ const animScatter = (function() {
 
   function pushTarget(x, y) {
     if (targetPoint !== null && currentPoint) {
-      trail.push({ x: currentPoint.x, y: currentPoint.y });
+      // Push the actual data target (not the interpolated position) so the
+      // trail passes through real sensor values and saved-point markers align.
+      trail.push({ x: targetPoint.x, y: targetPoint.y });
       if (trail.length > TRAIL_MAX) trail.shift();
-      prevPoint = { x: currentPoint.x, y: currentPoint.y };
+      prevPoint = { x: targetPoint.x, y: targetPoint.y };
     } else {
       prevPoint = { x, y };
     }
@@ -163,6 +230,8 @@ const animScatter = (function() {
     ctx.moveTo(PAD_LEFT * dpr, PAD_TOP * dpr);
     ctx.lineTo(PAD_LEFT * dpr, (h - PAD_BOTTOM) * dpr);
     ctx.lineTo((w - PAD_RIGHT) * dpr, (h - PAD_BOTTOM) * dpr);
+    ctx.lineTo((w - PAD_RIGHT) * dpr, PAD_TOP * dpr);
+    ctx.closePath();
     ctx.stroke();
 
     ctx.fillStyle = plotTheme.tick;
@@ -199,6 +268,27 @@ const animScatter = (function() {
     ctx.restore();
 
     ctx.restore();
+  }
+
+  // Rebuild cached visible points and bounds (called on new data, not every frame)
+  function rebuildVisibleCache() {
+    cachedVisiblePts = getVisiblePoints();
+    if (cachedVisiblePts && cachedVisiblePts.length > 0) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      // Include trail points and saved points in bounds
+      var allPts = cachedVisiblePts.concat(savedPointsOverlay);
+      for (const p of allPts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const padX = Math.max((maxX - minX) * 0.1, 0.5);
+      const padY = Math.max((maxY - minY) * 0.1, 0.5);
+      cachedVisibleBounds = { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
+    } else {
+      cachedVisibleBounds = null;
+    }
   }
 
   // Build visible points from plotData for the chosen mode
@@ -261,27 +351,19 @@ const animScatter = (function() {
       };
     }
 
-    // Build visible points from plotData based on mode
-    const visiblePts = getVisiblePoints();
-
-    // Compute target bounds from visible data
-    if (visiblePts && visiblePts.length > 0) {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const p of visiblePts) {
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
-      }
+    // Use cached visible points and bounds (rebuilt on new data, not every frame)
+    if (cachedVisibleBounds) {
+      // Expand target bounds if current animated point exceeds them
+      let tb = Object.assign({}, cachedVisibleBounds);
       if (currentPoint) {
-        if (currentPoint.x < minX) minX = currentPoint.x;
-        if (currentPoint.x > maxX) maxX = currentPoint.x;
-        if (currentPoint.y < minY) minY = currentPoint.y;
-        if (currentPoint.y > maxY) maxY = currentPoint.y;
+        const padX = Math.max((tb.maxX - tb.minX) * 0.1, 0.5);
+        const padY = Math.max((tb.maxY - tb.minY) * 0.1, 0.5);
+        if (currentPoint.x < tb.minX + padX) tb.minX = currentPoint.x - padX;
+        if (currentPoint.x > tb.maxX - padX) tb.maxX = currentPoint.x + padX;
+        if (currentPoint.y < tb.minY + padY) tb.minY = currentPoint.y - padY;
+        if (currentPoint.y > tb.maxY - padY) tb.maxY = currentPoint.y + padY;
       }
-      const padX = Math.max((maxX - minX) * 0.1, 0.5);
-      const padY = Math.max((maxY - minY) * 0.1, 0.5);
-      targetBounds = { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
+      targetBounds = tb;
     }
 
     // Smoothly transition bounds
@@ -293,6 +375,7 @@ const animScatter = (function() {
     drawAxes(w, h);
 
     if (!currentPoint && trail.length === 0) {
+      drawSavedPoints(w, h);
       requestAnimationFrame(draw);
       return;
     }
@@ -330,18 +413,23 @@ const animScatter = (function() {
       ctx.fill();
     }
 
-    // Draw current point (red dot on top)
+    // Draw current point (red circle with small inner dot)
     if (currentPoint) {
       const cx = mapX(currentPoint.x, w) * dpr;
       const cy = mapY(currentPoint.y, h) * dpr;
       ctx.beginPath();
-      ctx.arc(cx, cy, 4 * dpr, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 0, 0, 0.8)";
-      ctx.fill();
+      ctx.arc(cx, cy, 5 * dpr, 0, Math.PI * 2);
       ctx.strokeStyle = "rgba(255, 0, 0, 1)";
       ctx.lineWidth = 1.5 * dpr;
       ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3.0 * dpr, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 0, 0, 1)";
+      ctx.fill();
     }
+
+    // Draw saved point markers & labels on top of everything
+    drawSavedPoints(w, h);
 
     requestAnimationFrame(draw);
   }
@@ -358,11 +446,45 @@ const animScatter = (function() {
     lerpT = 1;
   }
 
-  return { pushTarget, clear };
+  // Saved points overlay: [{x, y, label}, ...]
+  let savedPointsOverlay = [];
+
+  function setSavedPoints(pts) {
+    savedPointsOverlay = pts || [];
+  }
+
+  function drawSavedPoints(w, h) {
+    if (savedPointsOverlay.length === 0) return;
+    ctx.save();
+    ctx.font = (9 * dpr) + "px 'DIN', sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    for (const pt of savedPointsOverlay) {
+      const px = mapX(pt.x, w) * dpr;
+      const py = mapY(pt.y, h) * dpr;
+      // Circle marker (no fill)
+      const r = 4 * dpr;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.strokeStyle = isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(80,80,80,0.9)";
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.stroke();
+      // Label
+      if (pt.label) {
+        ctx.fillStyle = isDarkMode ? "#fff" : "rgba(80,80,80,0.9)";
+        ctx.fillText(pt.label, px + r + 2 * dpr, py - 2 * dpr);
+      }
+    }
+    ctx.restore();
+  }
+
+  return { pushTarget, clear, rebuildVisibleCache, setSavedPoints };
 })();
 
 function updateAnimatedScatter() {
   if (!animScatter) return;
+  // Rebuild cached visible points on new data arrival
+  animScatter.rebuildVisibleCache();
   const cpuIdx = sensorToSeriesMap[SCATTER_CONFIG.y];
   const ambientIdx = sensorToSeriesMap[SCATTER_CONFIG.x];
   if (!cpuIdx || !ambientIdx) return;
@@ -372,6 +494,20 @@ function updateAnimatedScatter() {
   const cpu = plotData[cpuIdx][len - 1];
   if (ambient != null && cpu != null && !isNaN(ambient) && !isNaN(cpu)) {
     animScatter.pushTarget(ambient, cpu);
+  }
+
+  // Update saved points overlay — use actual sensor values (same as pts CSV)
+  if (sensorData && sensorData.saved_points && sensorData.saved_points.length > 0) {
+    var overlay = [];
+    for (var i = 0; i < sensorData.saved_points.length; i++) {
+      var sp = sensorData.saved_points[i];
+      var sx = parseFloat(sp.sensors[SCATTER_CONFIG.x]);
+      var sy = parseFloat(sp.sensors[SCATTER_CONFIG.y]);
+      if (!isNaN(sx) && !isNaN(sy)) {
+        overlay.push({ x: sx, y: sy, label: sp.label || "" });
+      }
+    }
+    animScatter.setSavedPoints(overlay);
   }
 }
 
@@ -395,6 +531,13 @@ const animTS = (function() {
   let seriesCurrent = {};  // key -> current animated value
   let targetTime = 0;      // latest sample timestamp (target)
   let currentTime = 0;     // smoothly interpolated timestamp
+  let lastFrameTime = 0;   // for delta-time-based lerp
+  const SMOOTH_RATE = 8;   // higher = snappier (units: 1/sec)
+
+  // Cached Y-range per unit group — rebuilt on data arrival, reused across frames
+  // { unit: { yMin, yMax } }
+  let cachedYRanges = {};
+  let yRangeStale = true;  // set true when new data arrives
 
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
@@ -413,6 +556,39 @@ const animTS = (function() {
       if (currentTime === 0) currentTime = time;
       targetTime = time;
     }
+    yRangeStale = true;
+  }
+
+  // Rebuild Y-range cache from visible data. Called once per data update, not per frame.
+  function rebuildYRanges(activeGroups, groupKeys, startIdx, dataLen, step) {
+    cachedYRanges = {};
+    for (let gi = 0; gi < groupKeys.length; gi++) {
+      const unit = groupKeys[gi];
+      const seriesInGroup = activeGroups[unit];
+      let yMin = Infinity, yMax = -Infinity;
+      for (const { key, si } of seriesInGroup) {
+        const seriesArr = plotData[si + 1];
+        for (let i = startIdx; i < dataLen; i += step) {
+          const v = seriesArr[i];
+          if (v != null && !isNaN(v)) {
+            if (v < yMin) yMin = v;
+            if (v > yMax) yMax = v;
+          }
+        }
+        const vLast = seriesArr[dataLen - 1];
+        if (vLast != null && !isNaN(vLast)) {
+          if (vLast < yMin) yMin = vLast;
+          if (vLast > yMax) yMax = vLast;
+        }
+        const cur = seriesCurrent[key];
+        if (cur != null) {
+          if (cur < yMin) yMin = cur;
+          if (cur > yMax) yMax = cur;
+        }
+      }
+      cachedYRanges[unit] = { yMin, yMax };
+    }
+    yRangeStale = false;
   }
 
   function getMode() {
@@ -435,14 +611,18 @@ const animTS = (function() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Advance interpolation for each series and time
+    // Advance interpolation for each series and time (frame-rate independent)
+    const now = performance.now();
+    const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0.016;
+    lastFrameTime = now;
+    const alpha = 1 - Math.exp(-SMOOTH_RATE * dt);
     for (const key in seriesTargets) {
       if (seriesCurrent[key] !== undefined) {
-        seriesCurrent[key] = lerp(seriesCurrent[key], seriesTargets[key], 0.3);
+        seriesCurrent[key] = lerp(seriesCurrent[key], seriesTargets[key], alpha);
       }
     }
     if (targetTime > 0) {
-      currentTime = lerp(currentTime, targetTime, 0.3);
+      currentTime = lerp(currentTime, targetTime, alpha);
     }
 
     if (!plotInitialized || plotData[0].length < 2) {
@@ -519,6 +699,11 @@ const animTS = (function() {
     const availH = h - PAD_TOP - PAD_BOTTOM - totalGap;
     const subH = availH / numGroups;
 
+    // Rebuild Y-range cache only when new data has arrived
+    if (yRangeStale) {
+      rebuildYRanges(activeGroups, groupKeys, startIdx, dataLen, step);
+    }
+
     // Draw each unit group
     for (let gi = 0; gi < numGroups; gi++) {
       const unit = groupKeys[gi];
@@ -528,29 +713,10 @@ const animTS = (function() {
       const spTop = PAD_TOP + gi * (subH + GAP);
       const spBottom = spTop + subH;
 
-      // Local Y range for this group (use step to match line drawing granularity)
-      let yMin = Infinity, yMax = -Infinity;
-      for (const { key, si } of seriesInGroup) {
-        const seriesArr = plotData[si + 1];
-        for (let i = startIdx; i < dataLen; i += step) {
-          const v = seriesArr[i];
-          if (v != null && !isNaN(v)) {
-            if (v < yMin) yMin = v;
-            if (v > yMax) yMax = v;
-          }
-        }
-        // Always include the last point (may be skipped by step)
-        const vLast = seriesArr[dataLen - 1];
-        if (vLast != null && !isNaN(vLast)) {
-          if (vLast < yMin) yMin = vLast;
-          if (vLast > yMax) yMax = vLast;
-        }
-        const cur = seriesCurrent[key];
-        if (cur != null) {
-          if (cur < yMin) yMin = cur;
-          if (cur > yMax) yMax = cur;
-        }
-      }
+      // Use cached Y range for this unit group
+      const cached = cachedYRanges[unit];
+      if (!cached) continue;
+      let yMin = cached.yMin, yMax = cached.yMax;
 
       if (!isFinite(yMin) || !isFinite(yMax)) continue;
       const yPad = Math.max((yMax - yMin) * 0.08, 0.1);
@@ -640,7 +806,7 @@ const animTS = (function() {
 
       for (let li = 0; li < seriesInGroup.length; li++) {
         const { key, si } = seriesInGroup[li];
-        const color = seriesColors[li % seriesColors.length];
+        const color = getSeriesColors()[li % getSeriesColors().length];
         const seriesArr = plotData[si + 1];
         const curVal = seriesCurrent[key];
 
@@ -656,7 +822,7 @@ const animTS = (function() {
         }
         // Interpolated tip (both time and value are smoothly interpolated)
         if (pts.length > 0 && curVal != null && !isNaN(curVal)) {
-          const tipT = (mode === "1min" ? currentTime : lastDataTime) + 0.3;
+          const tipT = mode === "1min" ? currentTime : lastDataTime;
           pts.push({ px: mapX(tipT), py: localMapY(curVal), t: tipT });
         }
         if (pts.length < 2) continue;
@@ -699,7 +865,7 @@ const animTS = (function() {
 
         // Dot and floating label
         if (curVal != null && !isNaN(curVal)) {
-          const tipT = (mode === "1min" ? currentTime : lastDataTime) + 0.3;
+          const tipT = mode === "1min" ? currentTime : lastDataTime;
           const dotX = mapX(tipT);
           const dotY = localMapY(curVal);
           ctx.beginPath();
@@ -714,6 +880,7 @@ const animTS = (function() {
       }
     }
 
+    screenFrameCount++;
     requestAnimationFrame(draw);
   }
 
@@ -743,22 +910,41 @@ function seriesColor(key, si) {
     if (numericSensors[i] === key) break;
     if ((sensorUnits[numericSensors[i]] || "?") === unit) idx++;
   }
-  return seriesColors[idx % seriesColors.length];
+  return getSeriesColors()[idx % getSeriesColors().length];
 }
+
+// Legend row cache: built once, then only value cells are updated
+let legendRowCache = null; // [{valueCell: HTMLElement}]
 
 function updateLegend() {
   if (!plotInitialized) return;
   const legendBody = document.getElementById("legend_table_body");
   const len = plotData[0].length;
-  let html = "";
+
+  // Build rows once
+  if (!legendRowCache) {
+    legendRowCache = [];
+    let html = "";
+    numericSensors.forEach((key, idx) => {
+      const color = seriesColor(key, idx);
+      const unit = sensorUnits[key] || "";
+      html += `<tr><td style="color:${color}">${key}</td><td>${unit}</td><td class="legend-val">-</td></tr>`;
+    });
+    legendBody.innerHTML = html;
+    const cells = legendBody.querySelectorAll('.legend-val');
+    cells.forEach(cell => legendRowCache.push({ valueCell: cell, lastValue: "" }));
+  }
+
+  // Update only changed value cells
   numericSensors.forEach((key, idx) => {
     const value = len > 0 ? plotData[idx + 1][len - 1] : null;
     const displayValue = (value != null && !isNaN(value)) ? value.toFixed(DECIMAL_POINTS) : "-";
-    const color = seriesColor(key, idx);
-    const unit = sensorUnits[key] || "";
-    html += `<tr><td style="color:${color}">${key}</td><td>${unit}</td><td>${displayValue}</td></tr>`;
+    const entry = legendRowCache[idx];
+    if (entry && entry.lastValue !== displayValue) {
+      entry.valueCell.textContent = displayValue;
+      entry.lastValue = displayValue;
+    }
   });
-  legendBody.innerHTML = html;
 }
 
 // Format numeric values using DECIMAL_POINTS
@@ -797,16 +983,23 @@ function updateTableRow(tbody, cache, key, value) {
     unitCell.textContent = sensorUnits[key] || "";
     valueCell.textContent = value;
 
-    // Add checkbox for ALL instruments (enable only if plottable)
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = isPlottable && enabledSeries[key];
-    checkbox.disabled = !isPlottable || !isNumeric;
+    // Add square x-toggle for ALL instruments (enable only if plottable)
+    const checkbox = document.createElement('span');
+    checkbox.className = 'x-check';
+    const checked = isPlottable && enabledSeries[key];
+    checkbox.innerHTML = checked ? '&times;' : '&nbsp;';
+    checkbox.dataset.checked = checked ? '1' : '0';
 
     if (isPlottable && isNumeric) {
-      checkbox.addEventListener('change', function() {
-        enabledSeries[key] = this.checked;
+      checkbox.style.cursor = 'pointer';
+      checkbox.addEventListener('click', function() {
+        const on = this.dataset.checked === '1';
+        this.dataset.checked = on ? '0' : '1';
+        this.innerHTML = on ? '&nbsp;' : '&times;';
+        enabledSeries[key] = !on;
       });
+    } else {
+      checkbox.style.opacity = '0.3';
     }
     checkboxCell.appendChild(checkbox);
 
@@ -975,14 +1168,32 @@ let POLL_INTERVAL = 100; // Overridden by config if available
 
 function fetchSensorData() {
   if (stopped) return;
+  const fetchStart = performance.now();
   fetch('/data_since/' + lastDataTimestamp)
     .then(response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     })
     .then(data => {
+      const fetchMs = performance.now() - fetchStart;
+      const iEl = document.getElementById('instrument_hz');
+      if (iEl) {
+        // Warn if round-trip exceeds poll interval (poll is bottlenecked)
+        if (fetchMs > POLL_INTERVAL * 1.5) {
+          iEl.style.color = 'orange';
+          iEl.title = 'Poll round-trip (' + Math.round(fetchMs) + 'ms) exceeds interval (' + POLL_INTERVAL + 'ms)';
+        } else {
+          iEl.style.color = '';
+          iEl.title = '';
+        }
+      }
       const samples = data.samples;
       sensorData = data;
+      instrumentFetchCount++;
+
+      // Restore pulse on successful fetch
+      var pulse = document.getElementById('clock_pulse');
+      if (pulse) pulse.classList.remove('dead');
 
       // Send commands only when they change (throttled)
       sendCommandIfChanged(controls);
@@ -1024,10 +1235,12 @@ function fetchSensorData() {
         serverTimeOffset = lastDataTimestamp * 1000 - Date.now();
       }
 
-      // Implement data retention limit
-      if (plotData[0].length > MAX_PLOT_POINTS) {
-        const removeCount = plotData[0].length - MAX_PLOT_POINTS + 1000;
-        plotData.forEach(series => series.splice(0, removeCount));
+      // Trim only when significantly over limit (avoids frequent large splices)
+      if (plotData[0].length > MAX_PLOT_POINTS * 1.2) {
+        const removeCount = plotData[0].length - MAX_PLOT_POINTS;
+        for (let s = 0; s < plotData.length; s++) {
+          plotData[s] = plotData[s].slice(removeCount);
+        }
       }
 
       updateLegend();
@@ -1058,6 +1271,8 @@ function fetchSensorData() {
     })
     .catch(err => {
       console.error('Error fetching sensor data:', err);
+      var pulse = document.getElementById('clock_pulse');
+      if (pulse) pulse.classList.add('dead');
     })
     .finally(() => {
       // Schedule next poll only after this one completes (sequential, no pile-up)
@@ -1419,7 +1634,7 @@ function saveFullTimeSeries(stamp) {
     // Draw series
     for (let li = 0; li < seriesInGroup.length; li++) {
       const { key, si } = seriesInGroup[li];
-      const color = seriesColors[li % seriesColors.length];
+      const color = getSeriesColors()[li % getSeriesColors().length];
       const arr = plotData[si + 1];
 
       ctx.strokeStyle = color;
@@ -1510,6 +1725,7 @@ document.getElementById('clear_ts_btn').addEventListener('click', function() {
   for (var i = 0; i < plotData.length; i++) {
     plotData[i] = [];
   }
+  legendRowCache = null;  // force legend rebuild
   if (animScatter) animScatter.clear();
 });
 

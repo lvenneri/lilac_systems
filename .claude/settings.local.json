@@ -11,7 +11,9 @@
       "Bash(echo \"EXIT:$?\")",
       "Bash(grep -n \"function makeControlPanel\" /Users/nitwit/Dropbox/LilacBox/lilac_box/sensor_app/static/*.js)",
       "Bash(git remote set-url origin https://github.com/lvenneri/lilac_systems.git)",
-      "Bash(grep -r / /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/*.py)"
+      "Bash(grep -r / /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/*.py)",
+      "Bash(node --check dashboard.js)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

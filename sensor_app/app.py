@@ -246,4 +246,4 @@ if __name__ == '__main__':
     if not args.no_browser:
         # Open after a short delay so the server has time to start
         threading.Timer(1.5, webbrowser.open, args=[f"http://localhost:{port}"]).start()
-    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, threaded=True)

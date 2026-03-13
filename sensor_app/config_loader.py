@@ -197,7 +197,7 @@ def load_config(filepath):
 
         for h in headers:
             h_stripped = str(h).strip() if h else ""
-            if not h_stripped or h_stripped == "Step #" or h_stripped == "Hold Time (s)":
+            if not h_stripped or h_stripped in ("Step #", "Hold Time (s)", "Name"):
                 continue
             col_info = {"header": h_stripped}
             if h_stripped.startswith("SP: "):
@@ -241,8 +241,10 @@ def load_config(filepath):
                             "channel_name": col["channel_name"],
                             "value": val,
                         }
+            name = str(d.get("Name", "")).strip()
             step_series.append({
                 "step_num": int(step_num),
+                "name": name,
                 "hold_time": float(hold_time),
                 "setpoints": setpoints,
             })

@@ -6,7 +6,7 @@ Config-driven experiment control and monitoring dashboard. Real-time plotting, P
 
 ## Setup
 
-Requires Python 3.11+.
+Requires **Python 3.9+**.
 
 ```bash
 git clone https://github.com/lvenneri/lilac_systems.git
@@ -15,6 +15,8 @@ python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+> **Tip:** On some systems use `pip3` instead of `pip`. On Windows use `python` instead of `python3`.
 
 ## Run
 
