@@ -618,6 +618,14 @@ body.dark-mode label {
   color: var(--text-heading);
 }
 
+.pid-output-channel-label {
+  font-size: 0.65rem;
+  font-weight: normal;
+  color: var(--text-muted);
+  margin-left: 8px;
+  letter-spacing: 0.5px;
+}
+
 .pid-status-line {
   display: inline-flex;
   align-items: baseline;
@@ -666,6 +674,20 @@ body.dark-mode label {
 }
 
 /* ===== Interlock Status ===== */
+.interlock-group {
+  border-left: 2px solid var(--text-muted);
+  padding-left: 8px;
+  margin: 6px 0;
+}
+
+.interlock-group-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
 .interlock-row {
   display: flex;
   align-items: center;
@@ -684,14 +706,15 @@ body.dark-mode label {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-heading);
+  width: 40%;
+  flex-shrink: 0;
 }
 
 .interlock-condition {
   font-size: 0.7rem;
   color: var(--text-muted);
   flex: 1;
-  text-align: center;
-  margin: 0 8px;
+  text-align: left;
 }
 
 .interlock-status {
@@ -708,6 +731,27 @@ body.dark-mode label {
 
 .interlock-clear {
   color: var(--indicator-match);
+}
+
+.interlock-reset-btn {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  margin-left: 6px;
+  border: 1px solid var(--indicator-mismatch);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--indicator-mismatch);
+  cursor: pointer;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.interlock-reset-btn:hover {
+  background: var(--indicator-mismatch);
+  color: var(--card-bg);
+}
+.interlock-reset-btn.hidden {
+  display: none;
 }
 
 .interlock-header-warning {
@@ -836,6 +880,24 @@ body.dark-mode label {
 @keyframes settling-pulse {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.8; }
+}
+
+/* Watch-only channel rows inside step series */
+.watch-channel-row {
+  padding: 4px 0;
+  gap: 8px;
+}
+
+.watch-channel-row .slider_text {
+  flex: 0 0 20%;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.watch-target-value {
+  flex: 1;
+  text-align: left;
 }
 
 .step-series-timer-text {

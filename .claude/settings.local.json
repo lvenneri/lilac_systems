@@ -13,7 +13,14 @@
       "Bash(git remote set-url origin https://github.com/lvenneri/lilac_systems.git)",
       "Bash(grep -r / /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/*.py)",
       "Bash(node --check dashboard.js)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(python -c \"from config_loader import load_config; from validate_config import validate; c = load_config\\(''example_config.xlsx''\\); e, w = validate\\(c\\); print\\(''Errors:'', e\\); print\\(''Warnings:'', w\\)\")",
+      "Bash(source venv/bin/activate)",
+      "Bash(python -c \"import experiment_engine; print\\(''OK''\\)\")",
+      "Bash(grep -l \"class.*Driver\" /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/driver_*.py)",
+      "Bash(python -c \"import experiment_engine; print\\(''engine OK''\\)\")",
+      "Bash(python -c \"import driver_base; print\\(''driver_base OK''\\)\")",
+      "Bash(python -c \":*)"
     ]
   }
 }

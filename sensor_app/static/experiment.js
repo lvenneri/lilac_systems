@@ -25,7 +25,6 @@ let _alarmActive = false;  // true while interlocks are tripped (even if muted)
 
 function _startInterlockAlarm() {
   _alarmActive = true;
-  _showMuteButton(true);
   if (_alarmInterval || _alarmMuted) return;
   _ensureAudioCtx();
 
@@ -51,17 +50,11 @@ function _startInterlockAlarm() {
 function _stopInterlockAlarm() {
   _alarmActive = false;
   _alarmMuted = false;
-  _showMuteButton(false);
   _updateMuteButtonIcon();
   if (_alarmInterval) {
     clearInterval(_alarmInterval);
     _alarmInterval = null;
   }
-}
-
-function _showMuteButton(show) {
-  const btn = document.getElementById('mute_alarm_toggle');
-  if (btn) btn.style.display = show ? '' : 'none';
 }
 
 const _svgSpeakerOn = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
@@ -171,6 +164,12 @@ function buildPIDPanels(loops) {
     const title = document.createElement("div");
     title.className = "pid-loop-title";
     title.textContent = loopName.replace(/_/g, " ");
+    if (cfg.output_channel) {
+      const outLabel = document.createElement("span");
+      outLabel.className = "pid-output-channel-label";
+      outLabel.textContent = cfg.output_channel.replace(/_/g, " ");
+      title.appendChild(outLabel);
+    }
     header.appendChild(title);
 
     const statusEls = { pv_channel: cfg.pv_channel };
@@ -212,7 +211,43 @@ function buildPIDPanels(loops) {
       modeRadios[mode] = radio;
     });
 
-    header.appendChild(btnGroup);
+    // Auto-tune button (same style as mode toggle)
+    const tuneBtnGroup = document.createElement("div");
+    tuneBtnGroup.className = "btn-group btn-group-sm";
+    tuneBtnGroup.setAttribute("role", "group");
+    const tuneBtn = document.createElement("button");
+    tuneBtn.className = "btn btn-outline-secondary btn-sm";
+    tuneBtn.textContent = "Tune";
+    tuneBtnGroup.appendChild(tuneBtn);
+    tuneBtn.addEventListener("click", function() {
+      if (tuneBtn.classList.contains("tuning")) {
+        fetch('/pid/autotune', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ loop: loopName, action: "cancel" })
+        });
+        tuneBtn.classList.remove("tuning");
+        tuneBtn.textContent = "Tune";
+      } else {
+        fetch('/pid/autotune', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ loop: loopName, action: "start" })
+        });
+        tuneBtn.classList.add("tuning");
+        tuneBtn.textContent = "Cancel";
+      }
+    });
+
+    // Layout: title on left, mode toggle + tune on right
+    header.appendChild(title);
+    const rightGroup = document.createElement("div");
+    rightGroup.style.display = "flex";
+    rightGroup.style.alignItems = "center";
+    rightGroup.style.gap = "6px";
+    rightGroup.appendChild(btnGroup);
+    rightGroup.appendChild(tuneBtnGroup);
+    header.appendChild(rightGroup);
     panel.appendChild(header);
 
     // Setpoint input (text_group group)
@@ -328,10 +363,18 @@ function buildPIDPanels(loops) {
 
     container.appendChild(panel);
 
+    // Gains + autotune status line
+    const gainsLine = document.createElement("div");
+    gainsLine.className = "pid-gains-line";
+    gainsLine.style.fontSize = "0.75em";
+    gainsLine.style.opacity = "0.6";
+    gainsLine.style.padding = "2px 8px";
+    panel.appendChild(gainsLine);
+
     pidControls[loopName] = {
       statusEls, spInput, spIndicator, modeRadios,
       outSlider, outValueSpan, outIndicator, outMin, outMax, outGroup,
-      settledDot
+      settledDot, tuneBtn, gainsLine
     };
   }
 }
@@ -387,6 +430,31 @@ function updatePIDStatus(pidStatus) {
         ctrl.outSlider.set_value((status.output - ctrl.outMin) / range);
       }
       setIndicatorDot(ctrl.outIndicator, true);
+    }
+
+    // Auto-tune status + gains display
+    if (ctrl.gainsLine) {
+      const at = status.autotune;
+      if (at) {
+        ctrl.gainsLine.textContent = `Tuning: ${at.oscillations}/${at.needed} oscillations`;
+        ctrl.gainsLine.style.opacity = "1";
+        ctrl.gainsLine.style.color = "#f0ad4e";
+        if (!ctrl.tuneBtn.classList.contains("tuning")) {
+          ctrl.tuneBtn.classList.add("tuning");
+          ctrl.tuneBtn.textContent = "Cancel";
+        }
+      } else {
+        const kp = status.kp != null ? status.kp.toFixed(4) : "--";
+        const ki = status.ki != null ? status.ki.toFixed(4) : "--";
+        const kd = status.kd != null ? status.kd.toFixed(4) : "--";
+        ctrl.gainsLine.textContent = `Kp=${kp}  Ki=${ki}  Kd=${kd}`;
+        ctrl.gainsLine.style.opacity = "0.6";
+        ctrl.gainsLine.style.color = "";
+        if (ctrl.tuneBtn.classList.contains("tuning")) {
+          ctrl.tuneBtn.classList.remove("tuning");
+          ctrl.tuneBtn.textContent = "Tune";
+        }
+      }
     }
   }
 }
@@ -582,16 +650,31 @@ function buildInterlockList() {
     return;
   }
 
-  // Build static list of interlock names with status placeholders
+  // Build static list of interlock names with status placeholders.
+  // Group interlocks with matching group names visually.
   container.innerHTML = "";
+  const groups = {};
+  const ungrouped = [];
   interlocksDefs.forEach(il => {
+    const g = il.group || "";
+    if (g) {
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(il);
+    } else {
+      ungrouped.push(il);
+    }
+  });
+
+  function addRow(il, parent) {
     const row = document.createElement("div");
     row.className = "interlock-row";
     row.id = "interlock_" + il.name;
 
     const name = document.createElement("span");
     name.className = "interlock-name";
-    name.textContent = il.name.replace(/_/g, " ");
+    let label = il.name.replace(/_/g, " ");
+    if (il.latch) label += " [latch]";
+    name.textContent = label;
 
     const cond = document.createElement("span");
     cond.className = "interlock-condition";
@@ -603,23 +686,66 @@ function buildInterlockList() {
     status.textContent = "OK";
     status.id = "interlock_status_" + il.name;
 
-    row.appendChild(name);
-    row.appendChild(cond);
-    row.appendChild(status);
-    container.appendChild(row);
+    // Reset button for latched interlocks (hidden until latched)
+    if (il.latch) {
+      const resetBtn = document.createElement("button");
+      resetBtn.className = "interlock-reset-btn hidden";
+      resetBtn.id = "interlock_reset_" + il.name;
+      resetBtn.textContent = "Reset";
+      resetBtn.addEventListener("click", () => {
+        fetch("/interlock/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: il.name }),
+        }).then(r => r.json()).then(data => {
+          if (data.status === "error") {
+            const el = document.getElementById("interlock_status_" + il.name);
+            if (el) {
+              el.innerHTML = '\u26A0 <span class="interlock-warning-box">ACTIVE</span>';
+            }
+          }
+        }).catch(() => {});
+      });
+      row.appendChild(name);
+      row.appendChild(cond);
+      row.appendChild(status);
+      row.appendChild(resetBtn);
+    } else {
+      row.appendChild(name);
+      row.appendChild(cond);
+      row.appendChild(status);
+    }
+    parent.appendChild(row);
+  }
+
+  // Render grouped interlocks with a label
+  Object.keys(groups).forEach(g => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "interlock-group";
+    const label = document.createElement("div");
+    label.className = "interlock-group-label";
+    label.textContent = g.replace(/_/g, " ") + " (all must be true)";
+    wrapper.appendChild(label);
+    groups[g].forEach(il => addRow(il, wrapper));
+    container.appendChild(wrapper);
   });
+
+  // Render ungrouped interlocks
+  ungrouped.forEach(il => addRow(il, container));
   interlocksBuilt = true;
 }
 
-function updateInterlockStatus(trippedList, sensors) {
+function updateInterlockStatus(trippedList, sensors, latchedList) {
   if (!interlocksBuilt) return;
   const trippedSet = new Set(trippedList || []);
+  const latchedSet = new Set(latchedList || []);
   let anyTripped = false;
 
   interlocksDefs.forEach(il => {
     const el = document.getElementById("interlock_status_" + il.name);
     const condEl = document.getElementById("interlock_cond_" + il.name);
     const row = document.getElementById("interlock_" + il.name);
+    const resetBtn = document.getElementById("interlock_reset_" + il.name);
     if (!el) return;
 
     // Update condition text with actual sensor value
@@ -629,15 +755,23 @@ function updateInterlockStatus(trippedList, sensors) {
       condEl.textContent = valStr + " " + il.condition + " " + il.threshold;
     }
 
+    const isLatched = latchedSet.has(il.name);
+
     if (trippedSet.has(il.name)) {
-      el.innerHTML = '\u26A0 <span class="interlock-warning-box">WARNING</span>';
+      if (isLatched) {
+        el.innerHTML = '\u26A0 <span class="interlock-warning-box">LATCHED</span>';
+      } else {
+        el.innerHTML = '\u26A0 <span class="interlock-warning-box">WARNING</span>';
+      }
       el.className = "interlock-status interlock-tripped";
       if (row) row.classList.add("tripped");
+      if (resetBtn) resetBtn.classList.toggle("hidden", !isLatched);
       anyTripped = true;
     } else {
       el.textContent = "OK";
       el.className = "interlock-status interlock-clear";
       if (row) row.classList.remove("tripped");
+      if (resetBtn) resetBtn.classList.add("hidden");
     }
   });
 
@@ -805,6 +939,31 @@ function buildStepSeriesControls(cfg) {
 
   container.appendChild(timerRow);
 
+  // === Watch-only channel rows (no actuation, just target + settled dot) ===
+  const watchRows = {};
+  columns.forEach(function(col) {
+    if (col.type !== "watch") return;
+    const row = document.createElement("div");
+    row.className = "output-control-row watch-channel-row";
+
+    const label = document.createElement("label");
+    label.className = "slider_text";
+    label.textContent = col.channel_name.replace(/_/g, " ");
+    row.appendChild(label);
+
+    const targetSpan = document.createElement("span");
+    targetSpan.className = "pid-status-value watch-target-value";
+    row.appendChild(targetSpan);
+
+    const dot = document.createElement("span");
+    dot.className = "step-settled-dot";
+    dot.style.display = "none";
+    row.appendChild(dot);
+
+    container.appendChild(row);
+    watchRows[col.header] = { row: row, targetSpan: targetSpan, settledDot: dot, col: col };
+  });
+
   // Store references for polling updates
   stepSeriesUI = {
     indicator: stepIndicator,
@@ -815,6 +974,7 @@ function buildStepSeriesControls(cfg) {
     timerText: timerText,
     steps: steps,
     columns: columns,
+    watchRows: watchRows,
   };
 }
 
@@ -841,16 +1001,17 @@ function updateStepSeriesStatus(status) {
     // Show/hide settled dot (green = within tolerance, red = not yet)
     if (ctrl.settledDot) {
       if (autoMode && inSeries) {
-        var ok = (col.tolerance != null) ? (settledCols[col.header] === true) : true;
+        var ok = (col.header in settledCols) ? (settledCols[col.header] === true) : true;
         ctrl.settledDot.style.display = "";
         ctrl.settledDot.innerHTML = '<span class="indicator-dot ' + (ok ? "settled" : "unsettled") + '"></span>';
       } else {
         ctrl.settledDot.style.display = "none";
       }
     }
-    // Dim setpoint input in auto mode
-    ctrl.spInput.disabled = autoMode && inSeries;
-    ctrl.spInput.style.opacity = (autoMode && inSeries) ? "0.5" : "";
+    // Dim setpoint input only when auto mode is actively running
+    const lockSp = autoMode && inSeries && status.running;
+    ctrl.spInput.disabled = lockSp;
+    ctrl.spInput.style.opacity = lockSp ? "0.5" : "";
   }
 
   // Output channels
@@ -861,7 +1022,7 @@ function updateStepSeriesStatus(status) {
     // Show/hide settled dot (green = within tolerance, red = not yet)
     if (ctrl.settledDot) {
       if (autoMode && inSeries) {
-        var ok2 = (col.tolerance != null) ? (settledCols[col.header] === true) : true;
+        var ok2 = (col.header in settledCols) ? (settledCols[col.header] === true) : true;
         ctrl.settledDot.style.display = "";
         ctrl.settledDot.innerHTML = '<span class="indicator-dot ' + (ok2 ? "settled" : "unsettled") + '"></span>';
       } else {
@@ -883,6 +1044,25 @@ function updateStepSeriesStatus(status) {
           wrapper.style.opacity = autoMode ? "0.5" : "";
         }
       }
+    }
+  }
+
+  // Watch-only channels
+  const watchRows = ui.watchRows || {};
+  const currentStep = (ui.steps && status.current_step < ui.steps.length) ? ui.steps[status.current_step] : null;
+  for (const header in watchRows) {
+    const w = watchRows[header];
+    if (autoMode && currentStep) {
+      const sp = currentStep.setpoints[header];
+      w.targetSpan.textContent = sp ? sp.value : "—";
+      w.row.style.display = "";
+      if (w.settledDot) {
+        var okW = (header in settledCols) ? (settledCols[header] === true) : true;
+        w.settledDot.style.display = "";
+        w.settledDot.innerHTML = '<span class="indicator-dot ' + (okW ? "settled" : "unsettled") + '"></span>';
+      }
+    } else {
+      w.row.style.display = "none";
     }
   }
 

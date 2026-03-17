@@ -60,31 +60,31 @@
 
       <!-- Column 1 (Left) -->
       <div class="dashboard-col" id="col_left">
-        {% if scatter_x and scatter_y %}
-        <div class="draggable-panel" draggable="true" data-panel-id="animated_scatter">
+        {% for sc in scatter_plots %}
+        <div class="draggable-panel" draggable="true" data-panel-id="animated_scatter_{{ loop.index0 }}">
           <div class="card">
             <div class="card-header">
               <div class="d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">{{ scatter_y }} vs {{ scatter_x }}</h5>
+                <h5 class="mb-0">{{ sc.y }} vs {{ sc.x }}</h5>
                 <div class="d-flex align-items-center">
-                  <div class="btn-group btn-group-sm me-2" role="group" id="anim_scatter_toggle">
-                    <input type="radio" class="btn-check" name="anim_scatter_option" id="anim_scatter_30min" value="30min" autocomplete="off">
-                    <label class="btn btn-outline-secondary" for="anim_scatter_30min">30min</label>
-                    <input type="radio" class="btn-check" name="anim_scatter_option" id="anim_scatter_1min" value="1min" autocomplete="off" checked>
-                    <label class="btn btn-outline-secondary" for="anim_scatter_1min">1min</label>
+                  <div class="btn-group btn-group-sm me-2" role="group">
+                    <input type="radio" class="btn-check" name="anim_scatter_option_{{ loop.index0 }}" id="anim_scatter_30min_{{ loop.index0 }}" value="30min" autocomplete="off">
+                    <label class="btn btn-outline-secondary" for="anim_scatter_30min_{{ loop.index0 }}">30min</label>
+                    <input type="radio" class="btn-check" name="anim_scatter_option_{{ loop.index0 }}" id="anim_scatter_1min_{{ loop.index0 }}" value="1min" autocomplete="off" checked>
+                    <label class="btn btn-outline-secondary" for="anim_scatter_1min_{{ loop.index0 }}">1min</label>
                   </div>
-                  <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="animated_scatter_body">
+                  <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="animated_scatter_body_{{ loop.index0 }}">
                     <span class="toggle-icon">−</span>
                   </button>
                 </div>
               </div>
             </div>
-            <div class="card-body panel-body-collapsible" id="animated_scatter_body">
-              <canvas id="animated_scatter_canvas" style="width:100%; aspect-ratio:1/1;"></canvas>
+            <div class="card-body panel-body-collapsible" id="animated_scatter_body_{{ loop.index0 }}">
+              <canvas id="animated_scatter_canvas_{{ loop.index0 }}" style="width:100%; aspect-ratio:1/1;"></canvas>
             </div>
           </div>
         </div>
-        {% endif %}
+        {% endfor %}
       </div>
 
       <!-- Column 2 (Middle): Plots -->
@@ -228,7 +228,7 @@
     <!-- Footer Row -->
     <div class="row">
       <div class="col-12">
-        <footer id="footer" class="text-start text-muted py-3">
+        <footer id="footer" class="text-start py-3" style="color: var(--text-muted)">
           <small>Lilac Systems &nbsp; <span id="screen_hz" title="Screen refresh rate">-- Hz</span> &nbsp; <span id="instrument_hz" title="Instrument poll rate">-- Hz</span></small>
         </footer>
       </div>
@@ -238,7 +238,7 @@
 
   <script>
     const sensorUnits = {{ sensor_units | tojson }};
-    const SCATTER_CONFIG = { x: "{{ scatter_x }}", y: "{{ scatter_y }}" };
+    const SCATTER_CONFIGS = {{ scatter_plots | tojson }};
   </script>
   <script src="/static/experiment.js"></script>
   <script src="/static/dashboard.js"></script>

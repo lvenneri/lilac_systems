@@ -8,6 +8,7 @@ import threading
 import time
 
 from pid_controller import PIDController
+from pid_autotune import StepResponseTuner
 from driver_base import create_driver
 
 
@@ -19,6 +20,7 @@ class ExperimentEngine:
         self.loop_configs = {}      # loop_name -> mutable config dict
         self.interlocks = []
         self.tripped_interlocks = set()
+        self.latched_interlocks = set()  # latched interlocks stay tripped until manual reset
 
         # Shared data state
         self.latest_readings = {}
@@ -51,8 +53,13 @@ class ExperimentEngine:
         self._csv_filename = None   # tracks current filename for reopen
 
         # Pre-computed channel lists (populated in initialize())
-        self._input_channels = []   # [(ch_name, driver, channel_id, slope, offset)]
+        self._input_channels = []   # [(ch_name, driver, channel_id, slope, offset, inst_name)]
         self._output_channels = []  # [(ch_name, ch_cfg)]
+
+        # Per-instrument poll rate limiting
+        self._instrument_poll_rates = {}   # instrument_name -> min interval (seconds)
+        self._last_instrument_read = {}    # instrument_name -> last read timestamp
+        self._cached_readings = {}         # ch_name -> last known scaled value
 
         # Step series state
         self.step_series = config.get("step_series", [])
@@ -68,6 +75,7 @@ class ExperimentEngine:
         self.saved_points = []  # [{x, y, label}, ...] for scatter overlay
 
         self._running = False
+        self._autotuners = {}  # loop_name -> RelayAutoTuner (active tuning sessions)
 
     # Backward-compat aliases so external code (app.py) using the old lock names still works
     @property
@@ -89,6 +97,11 @@ class ExperimentEngine:
                 drv = create_driver(inst_cfg)
                 drv.connect()
                 self.drivers[name] = drv
+                # Store poll rate for per-instrument rate limiting
+                poll_rate = inst_cfg.get("poll_rate", 0)
+                if isinstance(poll_rate, (int, float)) and poll_rate > 0:
+                    self._instrument_poll_rates[name] = poll_rate
+                self._last_instrument_read[name] = 0.0  # force first read
 
         for loop_name, loop_cfg in self.config.get("control_loops", {}).items():
             if loop_cfg.get("enabled", True):
@@ -109,16 +122,23 @@ class ExperimentEngine:
         ]
 
         # Pre-compute channel lists for fast iteration in hot loop
+        # Group channels by instrument for batch read support
+        self._channels_by_instrument = {}  # instrument_name -> [(ch_name, channel_id, slope, offset)]
         for ch_name, ch_cfg in self.config.get("channels", {}).items():
             if not ch_cfg.get("enabled", True):
                 continue
             if ch_cfg["direction"] == "input":
-                driver = self.drivers.get(ch_cfg["instrument"])
+                inst_name = ch_cfg["instrument"]
+                driver = self.drivers.get(inst_name)
                 if driver is not None:
                     self._input_channels.append((
                         ch_name, driver, ch_cfg["channel_id"],
                         ch_cfg.get("slope", 1), ch_cfg.get("offset", 0),
+                        inst_name,
                     ))
+                    self._channels_by_instrument.setdefault(inst_name, []).append(
+                        (ch_name, ch_cfg["channel_id"], ch_cfg.get("slope", 1), ch_cfg.get("offset", 0))
+                    )
             elif ch_cfg["direction"] == "output":
                 self._output_channels.append((ch_name, ch_cfg))
 
@@ -127,15 +147,105 @@ class ExperimentEngine:
             self._apply_step_setpoints(self.step_series[0])
 
     # ------------------------------------------------------------------
+    # Derived / computed quantities
+    # ------------------------------------------------------------------
+
+    def _compute_derived(self, flat_sensors):
+        """Compute derived quantities from measured data.
+
+        Add your custom calculations here. Each new key you add to
+        flat_sensors will automatically appear in the live dashboard,
+        CSV logs, and data buffer — no other changes needed.
+
+        ``flat_sensors`` already contains all scaled input-channel
+        readings, output-channel readbacks, and PID virtual channels
+        (pid.<loop>.setpoint / pv / output / error).
+
+        Examples
+        --------
+        # Power from voltage and current channels
+        V = flat_sensors.get("Voltage")
+        I = flat_sensors.get("Current")
+        if V is not None and I is not None:
+            flat_sensors["Power (W)"] = V * I
+            flat_sensors["Resistance (Ohm)"] = V / I if I != 0 else float("nan")
+
+        # Efficiency from two power measurements
+        p_in = flat_sensors.get("Input Power")
+        p_out = flat_sensors.get("Output Power")
+        if p_in and p_out and p_in != 0:
+            flat_sensors["Efficiency (%)"] = (p_out / p_in) * 100
+
+        # Dew point estimate from temperature and humidity
+        T = flat_sensors.get("Temperature")
+        RH = flat_sensors.get("Humidity")
+        if T is not None and RH is not None and RH > 0:
+            import math
+            a, b = 17.27, 237.7
+            gamma = (a * T) / (b + T) + math.log(RH / 100.0)
+            flat_sensors["Dew Point (C)"] = (b * gamma) / (a - gamma)
+        """
+        pass
+
+    # ------------------------------------------------------------------
     # Channel I/O
     # ------------------------------------------------------------------
 
     def _read_all_channels(self):
-        """Read all enabled input channels, apply slope/offset scaling."""
+        """Read all enabled input channels, apply slope/offset scaling.
+
+        Respects per-instrument poll rates: if an instrument's poll_rate
+        interval hasn't elapsed, returns cached values for its channels.
+        Uses batch reads (read_channels) when the driver supports it.
+        """
+        now = time.time()
         readings = {}
-        for ch_name, driver, channel_id, slope, offset in self._input_channels:
+
+        # Determine which instruments are due for a read
+        instruments_to_read = set()
+        for inst_name in self._channels_by_instrument:
+            min_interval = self._instrument_poll_rates.get(inst_name, 0)
+            elapsed = now - self._last_instrument_read.get(inst_name, 0)
+            if elapsed >= min_interval:
+                instruments_to_read.add(inst_name)
+
+        # Batch read for instruments that support it
+        batch_read_done = set()  # instrument names handled by batch read
+        for inst_name in instruments_to_read:
+            driver = self.drivers.get(inst_name)
+            if driver is None:
+                continue
+            ch_list = self._channels_by_instrument[inst_name]
+            if hasattr(driver, "read_channels") and len(ch_list) > 1:
+                channel_ids = [cid for _, cid, _, _ in ch_list]
+                try:
+                    raw_values = driver.read_channels(channel_ids)
+                    for (ch_name, cid, slope, offset), raw in zip(ch_list, raw_values):
+                        val = raw * slope + offset
+                        readings[ch_name] = val
+                        self._cached_readings[ch_name] = val
+                    self._last_instrument_read[inst_name] = now
+                    batch_read_done.add(inst_name)
+                except Exception:
+                    pass  # fall through to per-channel reads
+
+        # Per-channel reads for remaining instruments
+        for ch_name, driver, channel_id, slope, offset, inst_name in self._input_channels:
+            if ch_name in readings:
+                continue  # already handled by batch read
+            if inst_name not in instruments_to_read:
+                # Not due yet — use cached value
+                readings[ch_name] = self._cached_readings.get(ch_name, 0.0)
+                continue
             raw = driver.read_channel(channel_id)
-            readings[ch_name] = raw * slope + offset
+            val = raw * slope + offset
+            readings[ch_name] = val
+            self._cached_readings[ch_name] = val
+
+        # Update last-read timestamps for instruments read via per-channel
+        for inst_name in instruments_to_read - batch_read_done:
+            self._last_instrument_read[inst_name] = now
+
         return readings
 
     def _write_channel(self, channel_name, value):
@@ -167,13 +277,31 @@ class ExperimentEngine:
 
             pid.setpoint = float(cfg["setpoint"])
 
-            if mode == "auto":
+            # Check for active auto-tuner
+            tuner = self._autotuners.get(loop_name)
+            if tuner and not tuner.done:
+                output = tuner.update(pv)
+                self._write_channel(cfg["output_channel"], output)
+                error = pid.setpoint - pv
+                mode = "autotune"
+                if tuner.done:
+                    self._finish_autotune(loop_name, tuner)
+            elif mode == "auto":
                 output, error = pid.compute(pv)
                 self._write_channel(cfg["output_channel"], output)
             else:
                 # Manual mode: read last written output, compute error only
                 output = self._read_output_value(cfg["output_channel"])
                 error = pid.setpoint - pv
+
+            # Auto-tune progress
+            at_info = None
+            at = self._autotuners.get(loop_name)
+            if at and not at.done:
+                at_info = {
+                    "oscillations": at.oscillation_count,
+                    "needed": at.oscillations_needed,
+                }
 
             pid_status[loop_name] = {
                 "setpoint": pid.setpoint,
@@ -184,6 +312,10 @@ class ExperimentEngine:
                 "sp_units": cfg.get("sp_units", ""),
                 "pv_channel": cfg["pv_channel"],
                 "output_channel": cfg["output_channel"],
+                "kp": pid.kp,
+                "ki": pid.ki,
+                "kd": pid.kd,
+                "autotune": at_info,
             }
         return pid_status
 
@@ -203,45 +335,142 @@ class ExperimentEngine:
     # Interlocks
     # ------------------------------------------------------------------
 
+    def _eval_condition(self, il, readings):
+        """Evaluate a single interlock condition against current readings."""
+        ch_value = readings.get(il["channel"])
+        if ch_value is None:
+            return False
+        threshold = float(il["threshold"])
+        condition = il["condition"]
+        if condition == ">" and ch_value > threshold:
+            return True
+        if condition == "<" and ch_value < threshold:
+            return True
+        if condition == ">=" and ch_value >= threshold:
+            return True
+        if condition == "<=" and ch_value <= threshold:
+            return True
+        return False
+
     def _check_interlocks(self, readings):
+        # Group interlocks: all conditions in a group must be true to trip.
+        # Ungrouped interlocks (group == "") are evaluated independently.
+        groups = {}
+        ungrouped = []
         for il in self.interlocks:
-            ch_value = readings.get(il["channel"])
-            if ch_value is None:
-                continue
-            threshold = float(il["threshold"])
-            condition = il["condition"]
+            g = il.get("group", "")
+            if g:
+                groups.setdefault(g, []).append(il)
+            else:
+                ungrouped.append(il)
 
-            tripped = False
-            if condition == ">" and ch_value > threshold:
-                tripped = True
-            elif condition == "<" and ch_value < threshold:
-                tripped = True
-            elif condition == ">=" and ch_value >= threshold:
-                tripped = True
-            elif condition == "<=" and ch_value <= threshold:
-                tripped = True
+        # Evaluate ungrouped interlocks individually
+        for il in ungrouped:
+            self._process_interlock(il, self._eval_condition(il, readings))
 
-            if tripped and il["name"] not in self.tripped_interlocks:
-                self.tripped_interlocks.add(il["name"])
-                self._execute_interlock_action(il)
-                print(f"INTERLOCK TRIPPED: {il['name']} ({il['channel']} {condition} {threshold})")
-            elif not tripped and il["name"] in self.tripped_interlocks:
-                self.tripped_interlocks.discard(il["name"])
-                print(f"INTERLOCK CLEARED: {il['name']}")
+        # Evaluate grouped interlocks (AND logic)
+        for group_name, members in groups.items():
+            all_met = all(self._eval_condition(il, readings) for il in members)
+            for il in members:
+                self._process_interlock(il, all_met, group=group_name)
 
-    def _execute_interlock_action(self, il):
-        action = il["action"]
-        target = il.get("target", "")
-        value = il.get("action_value")
+    def _process_interlock(self, il, condition_met, group=None):
+        """Handle trip/clear logic for a single interlock, including latching and recovery."""
+        name = il["name"]
+        is_latched = il.get("latch", False)
+        was_tripped = name in self.tripped_interlocks
+        group_label = f" (group {group})" if group else ""
 
+        if condition_met and not was_tripped:
+            # Newly tripped
+            self.tripped_interlocks.add(name)
+            if is_latched:
+                self.latched_interlocks.add(name)
+            self._execute_interlock_actions(il)
+            print(f"INTERLOCK TRIPPED{group_label}: {name} ({il['channel']} {il['condition']} {il['threshold']})")
+        elif condition_met and was_tripped:
+            # Still tripped — re-execute actions to enforce outputs
+            # (e.g. keep heater off even if user tries to override)
+            self._execute_interlock_actions(il)
+        elif not condition_met and was_tripped:
+            # Condition cleared — but latched interlocks stay tripped
+            if name in self.latched_interlocks:
+                # Keep enforcing safe-state actions until operator resets
+                self._execute_interlock_actions(il)
+            else:
+                self.tripped_interlocks.discard(name)
+                self._execute_interlock_recovery(il)
+                print(f"INTERLOCK CLEARED{group_label}: {name}")
+
+    def _execute_interlock_actions(self, il):
+        """Execute all actions for a tripped interlock (compound action support)."""
+        actions = il.get("actions", [])
+        if not actions:
+            # Fallback to legacy single-action fields
+            actions = [{"action": il.get("action", "alarm"),
+                        "target": il.get("target", ""),
+                        "value": il.get("action_value")}]
+        for act in actions:
+            self._do_interlock_action(act["action"], act.get("target", ""), act.get("value"))
+
+    def _execute_interlock_recovery(self, il):
+        """Execute recovery actions when an interlock clears."""
+        recovery = il.get("recovery", [])
+        for act in recovery:
+            self._do_interlock_action(act["action"], act.get("target", ""), act.get("value"))
+            print(f"  RECOVERY: {act['action']} -> {act.get('target', '')} = {act.get('value', '')}")
+
+    def _do_interlock_action(self, action, target, value):
+        """Execute a single interlock action (shared by trip and recovery)."""
         if action == "set_output" and target:
             self._write_channel(target, float(value) if value is not None else 0)
         elif action == "disable_loop" and target in self.loop_configs:
             self.loop_configs[target]["mode"] = "manual"
             if target in self.pid_controllers:
                 self.pid_controllers[target].reset()
+        elif action == "enable_loop" and target in self.loop_configs:
+            self.loop_configs[target]["mode"] = "auto"
         elif action == "alarm":
             pass  # logged to console above
+
+    def reset_interlock(self, name):
+        """Manually reset a latched interlock.
+
+        If the trip condition is still active, the interlock will
+        re-trip on the next engine cycle.  Recovery actions are only
+        executed if the condition has actually cleared.
+        """
+        if name in self.latched_interlocks:
+            # Find the interlock definition
+            il = None
+            for _il in self.interlocks:
+                if _il["name"] == name:
+                    il = _il
+                    break
+
+            # Check whether the condition is still active
+            condition_still_met = False
+            if il:
+                condition_still_met = self._eval_condition(il, self.latest_readings)
+
+            if condition_still_met:
+                print(f"INTERLOCK RESET REJECTED: {name} (condition still active)")
+                return {
+                    "status": "error",
+                    "message": f"Cannot reset '{name}' — condition is still active "
+                               f"({il['channel']} {il['condition']} {il['threshold']})"
+                }
+
+            self.latched_interlocks.discard(name)
+            self.tripped_interlocks.discard(name)
+            if il:
+                self._execute_interlock_recovery(il)
+            print(f"INTERLOCK RESET (manual): {name}")
+            return {"status": "ok", "message": f"Interlock '{name}' reset"}
+        elif name in self.tripped_interlocks:
+            return {"status": "error", "message": f"Interlock '{name}' is not latched — it will clear automatically"}
+        else:
+            return {"status": "error", "message": f"Interlock '{name}' is not tripped"}
 
     # ------------------------------------------------------------------
     # CSV logging
@@ -387,13 +616,10 @@ class ExperimentEngine:
             # 1. Read all input channels
             readings = self._read_all_channels()
 
-            # 2. Check interlocks (before PID, so interlocks can override)
-            self._check_interlocks(readings)
-
-            # 3. Run PID loops
+            # 2. Run PID loops
             pid_status = self._run_pid_loops(readings)
 
-            # 4. Build flat sensor dict (channels + PID virtual channels)
+            # 3. Build flat sensor dict (channels + PID virtual channels)
             flat_sensors = dict(readings)
             # Also include output channel values (pre-computed list)
             for ch_name, ch_cfg in self._output_channels:
@@ -405,9 +631,17 @@ class ExperimentEngine:
                 flat_sensors[f"pid.{loop_name}.output"] = status["output"]
                 flat_sensors[f"pid.{loop_name}.error"] = status["error"]
 
+            # 3.1. Compute derived quantities from all available data
+            self._compute_derived(flat_sensors)
+
+            # 4. Check interlocks (after PID so we can monitor output
+            #    channels and PID virtual channels like pid.X.output).
+            #    Interlock actions take effect on the next cycle.
+            self._check_interlocks(flat_sensors)
+
             # 4.5. Step series — always update settled state; advance only when running
             if self.step_mode == "auto" and len(self.step_series) > 0:
-                self.step_settled = self._check_step_settled(readings)
+                self.step_settled = self._check_step_settled(flat_sensors)
                 if self.step_running and self.step_settled:
                     if self._step_last_tick is not None:
                         dt = now - self._step_last_tick
@@ -501,6 +735,7 @@ class ExperimentEngine:
             "pid_status": pid_status,
             "controls": ctrl,
             "tripped_interlocks": list(self.tripped_interlocks),
+            "latched_interlocks": list(self.latched_interlocks),
             "step_series": step_status,
             "saved_points": list(self.saved_points),
         }
@@ -551,6 +786,106 @@ class ExperimentEngine:
         ch_max = float(ch_cfg.get("max", 100))
         clamped = max(ch_min, min(ch_max, float(value)))
         self._write_channel(channel_name, clamped)
+
+    # ------------------------------------------------------------------
+    # PID Auto-tune
+    # ------------------------------------------------------------------
+
+    def start_autotune(self, loop_name):
+        """Start doublet step-response auto-tune for all enabled PID loops."""
+        if loop_name not in self.pid_controllers:
+            return {"error": f"unknown loop: {loop_name}"}
+        started = []
+        for ln, pid in self.pid_controllers.items():
+            cfg = self.loop_configs[ln]
+            if not cfg.get("enabled", True):
+                continue
+            out_min = float(cfg["out_min"])
+            out_max = float(cfg["out_max"])
+            setpoint = float(cfg["setpoint"])
+            reverse = float(cfg.get("kp", 1)) < 0
+            baseline_output = self._read_output_value(cfg["output_channel"])
+            tuner = StepResponseTuner(
+                setpoint=setpoint,
+                baseline_output=baseline_output,
+                out_min=out_min,
+                out_max=out_max,
+                reverse=reverse,
+            )
+            self._autotuners[ln] = tuner
+            cfg["mode"] = "auto"
+            pid.reset()
+            started.append(ln)
+            print(f"  {ln}: SP={setpoint}, baseline={baseline_output:.1f}, "
+                  f"range=[{out_min},{out_max}], reverse={reverse}")
+        print(f"\n{'='*60}")
+        print(f"AUTO-TUNE STARTED: {', '.join(started)}")
+        print(f"  Method: doublet step response + SIMC tuning")
+        print(f"{'='*60}\n", flush=True)
+        return {"status": "started"}
+
+    def _finish_autotune(self, loop_name, tuner):
+        """Apply auto-tuned gains and clean up."""
+        result = tuner.result
+        if result is None:
+            print(f"\nAUTO-TUNE FAILED: {loop_name} — no measurable response\n", flush=True)
+            del self._autotuners[loop_name]
+            return
+
+        kp, ki, kd = result["kp"], result["ki"], result["kd"]
+
+        # Negate gains for reverse-acting loops
+        cfg = self.loop_configs[loop_name]
+        old_kp = float(cfg.get("kp", 1))
+        if old_kp < 0:
+            kp, ki, kd = -kp, -ki, -kd
+
+        t_sample = result.get("sample_time", float(cfg.get("sample_time", 0.1)))
+
+        pid = self.pid_controllers[loop_name]
+        pid.kp = kp
+        pid.ki = ki
+        pid.kd = kd
+        pid.sample_time = t_sample
+        pid.reset()
+        cfg["kp"] = kp
+        cfg["ki"] = ki
+        cfg["kd"] = kd
+        cfg["sample_time"] = t_sample
+
+        print(f"\n{'='*60}")
+        print(f"AUTO-TUNE COMPLETE: {loop_name}")
+        print(f"  Process gain (K): {result['K']:.4f}")
+        print(f"  Time constant (τ): {result['tau']:.2f} s")
+        print(f"  Dead time (θ): {result['theta']:.2f} s")
+        print(f"  Kp = {kp:.4f}")
+        print(f"  Ki = {ki:.4f}")
+        print(f"  Kd = {kd:.4f}")
+        print(f"  Sample time = {t_sample:.3f} s")
+        print(f"{'='*60}\n", flush=True)
+
+        del self._autotuners[loop_name]
+
+    def cancel_autotune(self, loop_name):
+        """Cancel an active auto-tune session."""
+        if loop_name in self._autotuners:
+            del self._autotuners[loop_name]
+            print(f"AUTO-TUNE CANCELLED: {loop_name}", flush=True)
+            # Return to manual mode
+            self.set_pid_mode(loop_name, "manual")
+            return {"status": "cancelled"}
+        return {"error": "no active autotune"}
+
+    def get_autotune_status(self, loop_name):
+        """Return auto-tune progress for the given loop."""
+        tuner = self._autotuners.get(loop_name)
+        if tuner is None:
+            return {"active": False}
+        return {
+            "active": not tuner.done,
+            "oscillations": tuner.oscillation_count,
+            "needed": tuner.oscillations_needed,
+        }
 
     # ------------------------------------------------------------------
     # Step Series control
@@ -619,7 +954,15 @@ class ExperimentEngine:
 
         For PID setpoint columns, also forces the PID loop into auto mode
         so the controller actively drives toward the setpoint.
+        PID loops whose SP column is blank/NA for this step are switched
+        to manual so direct output control can take over.
         """
+        # Collect which PID pv_channels are actively set in this step
+        active_pv_channels = set()
+        for sp_info in step["setpoints"].values():
+            if sp_info["type"] == "pid_setpoint":
+                active_pv_channels.add(sp_info["pv_channel"])
+
         for col_header, sp_info in step["setpoints"].items():
             if sp_info["type"] == "pid_setpoint":
                 pv_channel = sp_info["pv_channel"]
@@ -631,6 +974,18 @@ class ExperimentEngine:
                         break
             elif sp_info["type"] == "output_channel":
                 self.set_output(sp_info["channel_name"], sp_info["value"])
+            # "watch" type: no actuation — user controls this manually
+
+        # Switch PID loops with no SP value in this step to manual
+        if self.step_mode == "auto":
+            for col in self.step_columns:
+                if col["type"] != "pid_setpoint":
+                    continue
+                if col["pv_channel"] not in active_pv_channels:
+                    for loop_name, loop_cfg in self.loop_configs.items():
+                        if loop_cfg["pv_channel"] == col["pv_channel"]:
+                            self.set_pid_mode(loop_name, "manual")
+                            break
 
     def _check_step_settled(self, readings):
         """Check per-column and overall settled state.
@@ -646,18 +1001,26 @@ class ExperimentEngine:
         step = self.step_series[self.step_current]
         for col in self.step_columns:
             tol = col.get("tolerance")
-            if tol is None:
-                continue  # no tolerance → always settled, not tracked
-            tol = float(tol)
             header = col["header"]
             sp_info = step["setpoints"].get(header)
             if sp_info is None:
                 continue
             target = sp_info["value"]
             if col["type"] == "pid_setpoint":
+                if tol is None:
+                    continue  # no tolerance → always settled, not tracked
+                tol = float(tol)
                 pv = readings.get(col["pv_channel"])
                 cols[header] = pv is not None and abs(pv - target) <= tol
+            elif col["type"] == "watch":
+                if tol is None:
+                    continue
+                tol = float(tol)
+                pv = readings.get(col["channel_name"])
+                cols[header] = pv is not None and abs(pv - target) <= tol
             elif col["type"] == "output_channel":
+                # No tolerance → exact match (appropriate for selectors)
+                tol = float(tol) if tol is not None else 0.0
                 actual = self._read_output_value(col["channel_name"])
                 cols[header] = abs(actual - target) <= tol
         self.step_settled_cols = cols

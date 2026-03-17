@@ -125,7 +125,30 @@ def validate(config):
     # ── Interlocks ───────────────────────────────────────────────────
     interlock_names = set()
     valid_conditions = {">", "<", ">=", "<="}
-    valid_actions = {"alarm", "set_output", "disable_loop"}
+    valid_actions = {"alarm", "set_output", "disable_loop", "enable_loop"}
+
+    def _validate_action_entry(name, act_dict, label):
+        """Validate a single action dict (used for both trip actions and recovery)."""
+        action = act_dict.get("action", "")
+        target = act_dict.get("target", "")
+        if action not in valid_actions:
+            errors.append(f"Interlocks > {name}: {label} action must be one of {valid_actions}, got '{action}'")
+        if action == "set_output":
+            if not target:
+                errors.append(f"Interlocks > {name}: {label} 'set_output' requires a Target channel")
+            elif target not in output_channels:
+                errors.append(
+                    f"Interlocks > {name}: {label} Target '{target}' must be an enabled output channel "
+                    f"(for action 'set_output')"
+                )
+        elif action in ("disable_loop", "enable_loop"):
+            if not target:
+                errors.append(f"Interlocks > {name}: {label} '{action}' requires a Target loop name")
+            elif target not in enabled_loops:
+                errors.append(
+                    f"Interlocks > {name}: {label} Target '{target}' must be an enabled control loop "
+                    f"(for action '{action}')"
+                )
 
     for il in interlocks:
         if not il.get("enabled", True):
@@ -144,28 +167,22 @@ def validate(config):
         cond = il.get("condition", "")
         if cond not in valid_conditions:
             errors.append(f"Interlocks > {name}: Condition must be one of {valid_conditions}, got '{cond}'")
-        # Action
-        action = il.get("action", "")
-        if action not in valid_actions:
-            errors.append(f"Interlocks > {name}: Action must be one of {valid_actions}, got '{action}'")
-        # Target
-        target = il.get("target", "")
-        if action == "set_output":
-            if not target:
-                errors.append(f"Interlocks > {name}: Action 'set_output' requires a Target channel")
-            elif target not in output_channels:
-                errors.append(
-                    f"Interlocks > {name}: Target '{target}' must be an enabled output channel "
-                    f"(for action 'set_output')"
-                )
-        elif action == "disable_loop":
-            if not target:
-                errors.append(f"Interlocks > {name}: Action 'disable_loop' requires a Target loop name")
-            elif target not in enabled_loops:
-                errors.append(
-                    f"Interlocks > {name}: Target '{target}' must be an enabled control loop "
-                    f"(for action 'disable_loop')"
-                )
+        # Validate compound actions
+        actions = il.get("actions", [])
+        if actions:
+            for i, act in enumerate(actions):
+                _validate_action_entry(name, act, f"Action[{i}]")
+        else:
+            # Fallback: validate legacy single-action fields
+            _validate_action_entry(name, {
+                "action": il.get("action", ""),
+                "target": il.get("target", ""),
+                "value": il.get("action_value"),
+            }, "Action")
+        # Validate recovery actions
+        recovery = il.get("recovery", [])
+        for i, act in enumerate(recovery):
+            _validate_action_entry(name, act, f"Recovery[{i}]")
 
     # ── Logging ──────────────────────────────────────────────────────
     for ch_name, log_cfg in logging_cfg.items():
@@ -182,6 +199,11 @@ def validate(config):
     pv_to_loop = {}
     for loop_name, loop_cfg in enabled_loops.items():
         pv_to_loop[loop_cfg["pv_channel"]] = loop_name
+
+    # Map PID output channels for over-specification checks
+    pid_output_to_loop = {}
+    for loop_name, loop_cfg in enabled_loops.items():
+        pid_output_to_loop[loop_cfg["output_channel"]] = loop_name
 
     for col in step_columns:
         header = col.get("header", "")
@@ -204,14 +226,50 @@ def validate(config):
                     f"Step Series > column '{header}': output channel '{ch_name}' "
                     f"does not exist as an enabled output channel"
                 )
+        elif col["type"] == "watch":
+            ch_name = col.get("channel_name", "")
+            if ch_name not in enabled_channels:
+                errors.append(
+                    f"Step Series > column '{header}': watch channel '{ch_name}' "
+                    f"does not exist as an enabled channel"
+                )
+            if col.get("tolerance") is None:
+                warnings.append(
+                    f"Step Series > column '{header}': Watch column has no tolerance — "
+                    f"settling will not be tracked for this column"
+                )
         tol = col.get("tolerance")
         if tol is not None and (not isinstance(tol, (int, float)) or tol <= 0):
             errors.append(f"Step Series > column '{header}': Tolerance must be > 0, got {tol}")
 
+    # Per-step checks
     for step in step_series:
+        step_num = step.get("step_num", "?")
         hold = step.get("hold_time", 0)
         if not isinstance(hold, (int, float)) or hold < 0:
-            errors.append(f"Step Series > Step {step.get('step_num', '?')}: Hold Time must be >= 0, got {hold}")
+            errors.append(f"Step Series > Step {step_num}: Hold Time must be >= 0, got {hold}")
+
+        # Check for over-specification: a step that has both an SP column
+        # (which drives a PID loop's output) and a direct output column
+        # targeting the same physical output channel.
+        sp_info = step.get("setpoints", {})
+        active_pid_outputs = set()
+        for col_header, info in sp_info.items():
+            if info["type"] == "pid_setpoint":
+                pv_ch = info["pv_channel"]
+                loop_name = pv_to_loop.get(pv_ch)
+                if loop_name:
+                    active_pid_outputs.add(enabled_loops[loop_name]["output_channel"])
+        for col_header, info in sp_info.items():
+            if info["type"] == "output_channel":
+                ch_name = info["channel_name"]
+                if ch_name in active_pid_outputs:
+                    loop_name = pid_output_to_loop.get(ch_name, "?")
+                    errors.append(
+                        f"Step Series > Step {step_num}: output channel '{ch_name}' is set directly "
+                        f"AND driven by PID loop '{loop_name}' via SP column in the same step — "
+                        f"use blank/NA in one column to avoid conflict"
+                    )
 
     # ── Settings ─────────────────────────────────────────────────────
     freq = settings.get("Sample Frequency (Hz)")

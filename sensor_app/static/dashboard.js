@@ -123,6 +123,15 @@ const seriesColorsDark  = palettes[palette].dark;
 
 function getSeriesColors() { return isDarkMode ? seriesColorsDark : seriesColorsLight; }
 
+// Strip .pv / .setpoint / .sp suffix to get the base name for color grouping
+function seriesBaseName(key) {
+  if (key.endsWith('.setpoint')) return key.slice(0, -'.setpoint'.length);
+  if (key.endsWith('.pv')) return key.slice(0, -3);
+  if (key.endsWith('.sp')) return key.slice(0, -3);
+  return key;
+}
+function isSetpoint(key) { return key.endsWith('.setpoint') || key.endsWith('.sp'); }
+
 // Initialize plot (discovers sensors, sets plotInitialized)
 function initializePlot() {
   if (numericSensors.length === 0) return;
@@ -155,8 +164,8 @@ function niceTickFormat(val, step) {
 }
 
 // ===== Animated Scatter Plot (Canvas 2D, requestAnimationFrame) =====
-const animScatter = (function() {
-  const canvas = document.getElementById("animated_scatter_canvas");
+function createAnimScatter(canvasId, radioName, scatterCfg) {
+  const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
   const ctx = canvas.getContext("2d", { alpha: true });
   const dpr = window.devicePixelRatio || 1;
@@ -165,23 +174,21 @@ const animScatter = (function() {
   ctx.lineCap = "round";
 
   // State
-  let prevPoint = null;   // {x, y} - where we're interpolating FROM
-  let targetPoint = null; // {x, y} - where we're interpolating TO
-  let currentPoint = null; // {x, y} - the smoothly interpolated display position
-  let lerpT = 1;          // 0..1 interpolation fraction (1 = arrived at target)
+  let prevPoint = null;
+  let targetPoint = null;
+  let currentPoint = null;
+  let lerpT = 1;
+  let lastScatterFrame = 0;
 
   const TRAIL_MAX = 700;
-  let trail = [];          // array of {x, y} historical points
+  let trail = [];
 
-  // Auto-scaling with smooth transition
   let currentBounds = { minX: 20, maxX: 30, minY: 40, maxY: 80 };
   let targetBounds = { minX: 20, maxX: 30, minY: 40, maxY: 80 };
 
-  // Cached visible points — rebuilt on new data, reused across frames
   let cachedVisiblePts = null;
   let cachedVisibleBounds = null;
 
-  // Layout constants
   const PAD_LEFT = 50;
   const PAD_BOTTOM = 40;
   const PAD_TOP = 0;
@@ -194,14 +201,13 @@ const animScatter = (function() {
   }
 
   function getMode() {
-    const el = document.querySelector('input[name="anim_scatter_option"]:checked');
+    const el = document.querySelector('input[name="' + radioName + '"]:checked');
     return el ? el.value : "1min";
   }
 
   function pushTarget(x, y) {
+    if (targetPoint && targetPoint.x === x && targetPoint.y === y) return;
     if (targetPoint !== null && currentPoint) {
-      // Push the actual data target (not the interpolated position) so the
-      // trail passes through real sensor values and saved-point markers align.
       trail.push({ x: targetPoint.x, y: targetPoint.y });
       if (trail.length > TRAIL_MAX) trail.shift();
       prevPoint = { x: targetPoint.x, y: targetPoint.y };
@@ -237,7 +243,6 @@ const animScatter = (function() {
     ctx.fillStyle = plotTheme.tick;
     ctx.font = (10 * dpr) + "px 'DIN', sans-serif";
 
-    // X ticks (nice increments)
     const xTicks = niceTicks(currentBounds.minX, currentBounds.maxX, 5);
     const xStep = xTicks.length > 1 ? xTicks[1] - xTicks[0] : 1;
     ctx.textAlign = "center";
@@ -246,7 +251,6 @@ const animScatter = (function() {
       ctx.fillText(niceTickFormat(val, xStep), px, (h - PAD_BOTTOM + 15) * dpr);
     }
 
-    // Y ticks (nice increments)
     const yTicks = niceTicks(currentBounds.minY, currentBounds.maxY, 5);
     const yStep = yTicks.length > 1 ? yTicks[1] - yTicks[0] : 1;
     ctx.textAlign = "right";
@@ -255,53 +259,51 @@ const animScatter = (function() {
       ctx.fillText(niceTickFormat(val, yStep), (PAD_LEFT - 5) * dpr, py + 3 * dpr);
     }
 
-    // Axis labels
     ctx.fillStyle = plotTheme.label;
     ctx.font = (11 * dpr) + "px 'DIN', sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(SCATTER_CONFIG.x, (PAD_LEFT + (w - PAD_LEFT - PAD_RIGHT) / 2) * dpr, (h - 5) * dpr);
+    ctx.fillText(scatterCfg.x, (PAD_LEFT + (w - PAD_LEFT - PAD_RIGHT) / 2) * dpr, (h - 5) * dpr);
 
     ctx.save();
     ctx.translate(12 * dpr, (PAD_TOP + (h - PAD_TOP - PAD_BOTTOM) / 2) * dpr);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(SCATTER_CONFIG.y, 0, 0);
+    ctx.fillText(scatterCfg.y, 0, 0);
     ctx.restore();
 
     ctx.restore();
   }
 
-  // Rebuild cached visible points and bounds (called on new data, not every frame)
   function rebuildVisibleCache() {
     cachedVisiblePts = getVisiblePoints();
     if (cachedVisiblePts && cachedVisiblePts.length > 0) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      // Include trail points and saved points in bounds
-      var allPts = cachedVisiblePts.concat(savedPointsOverlay);
+      var allPts = cachedVisiblePts.concat(trail, savedPointsOverlay);
       for (const p of allPts) {
         if (p.x < minX) minX = p.x;
         if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y;
         if (p.y > maxY) maxY = p.y;
       }
-      const padX = Math.max((maxX - minX) * 0.1, 0.5);
-      const padY = Math.max((maxY - minY) * 0.1, 0.5);
+      const rangeX = maxX - minX || 1;
+      const rangeY = maxY - minY || 1;
+      const padX = rangeX * 0.15;
+      const padY = rangeY * 0.15;
       cachedVisibleBounds = { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
     } else {
       cachedVisibleBounds = null;
     }
   }
 
-  // Build visible points from plotData for the chosen mode
   function getVisiblePoints() {
-    const cpuIdx = sensorToSeriesMap[SCATTER_CONFIG.y];
-    const ambientIdx = sensorToSeriesMap[SCATTER_CONFIG.x];
+    const cpuIdx = sensorToSeriesMap[scatterCfg.y];
+    const ambientIdx = sensorToSeriesMap[scatterCfg.x];
     if (!cpuIdx || !ambientIdx || !plotInitialized) return null;
     const dataLen = plotData[0].length;
     if (dataLen === 0) return null;
 
     const mode = getMode();
     const lastTime = plotData[0][dataLen - 1];
-    const window = mode === "1min" ? 60 : 1800; // 1 min or 30 min
+    const window = mode === "1min" ? 60 : 1800;
     const cutoff = lastTime - window;
     let startIdx = 0;
     for (let i = dataLen - 1; i >= 0; i--) {
@@ -309,10 +311,9 @@ const animScatter = (function() {
     }
 
     const pts = [];
-    // Subsample in "30min" mode if too many points
     let step = 1;
     const count = dataLen - startIdx;
-    if (mode === "30min" && count > 600) {
+    if (count > 600) {
       step = Math.ceil(count / 600);
     }
     for (let i = startIdx; i < dataLen; i += step) {
@@ -338,9 +339,11 @@ const animScatter = (function() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Advance interpolation (ease toward 1)
+    const now = performance.now();
+    const dt = lastScatterFrame ? (now - lastScatterFrame) / 1000 : 0.016;
+    lastScatterFrame = now;
     if (lerpT < 1) {
-      lerpT = Math.min(1, lerpT + 0.08);
+      lerpT = Math.min(1, lerpT + dt / samplePeriodSec());
     }
 
     if (targetPoint && prevPoint) {
@@ -351,26 +354,41 @@ const animScatter = (function() {
       };
     }
 
-    // Use cached visible points and bounds (rebuilt on new data, not every frame)
     if (cachedVisibleBounds) {
-      // Expand target bounds if current animated point exceeds them
       let tb = Object.assign({}, cachedVisibleBounds);
       if (currentPoint) {
-        const padX = Math.max((tb.maxX - tb.minX) * 0.1, 0.5);
-        const padY = Math.max((tb.maxY - tb.minY) * 0.1, 0.5);
+        const padX = (tb.maxX - tb.minX) * 0.1 || 0.1;
+        const padY = (tb.maxY - tb.minY) * 0.1 || 0.1;
         if (currentPoint.x < tb.minX + padX) tb.minX = currentPoint.x - padX;
         if (currentPoint.x > tb.maxX - padX) tb.maxX = currentPoint.x + padX;
         if (currentPoint.y < tb.minY + padY) tb.minY = currentPoint.y - padY;
         if (currentPoint.y > tb.maxY - padY) tb.maxY = currentPoint.y + padY;
       }
-      targetBounds = tb;
+      const needsExpand = tb.minX < targetBounds.minX || tb.maxX > targetBounds.maxX ||
+                          tb.minY < targetBounds.minY || tb.maxY > targetBounds.maxY;
+      if (needsExpand) {
+        targetBounds = tb;
+      } else {
+        const curRangeX = targetBounds.maxX - targetBounds.minX || 1;
+        const curRangeY = targetBounds.maxY - targetBounds.minY || 1;
+        const threshX = curRangeX * 0.03;
+        const threshY = curRangeY * 0.03;
+        if (Math.abs(tb.minX - targetBounds.minX) > threshX ||
+            Math.abs(tb.maxX - targetBounds.maxX) > threshX ||
+            Math.abs(tb.minY - targetBounds.minY) > threshY ||
+            Math.abs(tb.maxY - targetBounds.maxY) > threshY) {
+          targetBounds = tb;
+        }
+      }
     }
 
-    // Smoothly transition bounds
-    currentBounds.minX = lerp(currentBounds.minX, targetBounds.minX, 0.05);
-    currentBounds.maxX = lerp(currentBounds.maxX, targetBounds.maxX, 0.05);
-    currentBounds.minY = lerp(currentBounds.minY, targetBounds.minY, 0.05);
-    currentBounds.maxY = lerp(currentBounds.maxY, targetBounds.maxY, 0.05);
+    function boundsLerp(cur, tgt, isExpanding) {
+      return lerp(cur, tgt, isExpanding ? 0.15 : 0.04);
+    }
+    currentBounds.minX = boundsLerp(currentBounds.minX, targetBounds.minX, targetBounds.minX < currentBounds.minX);
+    currentBounds.maxX = boundsLerp(currentBounds.maxX, targetBounds.maxX, targetBounds.maxX > currentBounds.maxX);
+    currentBounds.minY = boundsLerp(currentBounds.minY, targetBounds.minY, targetBounds.minY < currentBounds.minY);
+    currentBounds.maxY = boundsLerp(currentBounds.maxY, targetBounds.maxY, targetBounds.maxY > currentBounds.maxY);
 
     drawAxes(w, h);
 
@@ -380,40 +398,47 @@ const animScatter = (function() {
       return;
     }
 
-    // Use trail (actual animated positions) for drawing, not raw plotData
     const fullTrail = currentPoint ? trail.concat([currentPoint]) : trail;
     const totalPts = fullTrail.length;
 
-    // Fade floor: "1min" fades to 0%, "30min" fades to 20%
     const fadeFloor = getMode() === "30min" ? 0.2 : 0;
 
-    // Draw trail lines with fading
     if (totalPts > 1) {
-      for (let i = 0; i < totalPts - 1; i++) {
-        const ratio = totalPts > 2 ? i / (totalPts - 2) : 1;
-        const alpha = fadeFloor + ratio * (0.7 - fadeFloor);
+      const nBands = 4;
+      ctx.lineWidth = 1.5 * dpr;
+      const dotR = 2.5 * dpr;
+      for (let b = 0; b < nBands; b++) {
+        const bandLo = b / nBands;
+        const bandHi = (b + 1) / nBands;
+        const isLast = (b === nBands - 1);
+        const bandMid = (bandLo + bandHi) / 2;
+        const lineAlpha = fadeFloor + bandMid * (0.7 - fadeFloor);
+        const dotAlpha = fadeFloor + bandMid * (0.65 - fadeFloor);
+        ctx.strokeStyle = `rgba(${plotTheme.trail}, ${lineAlpha})`;
         ctx.beginPath();
-        ctx.strokeStyle = `rgba(${plotTheme.trail}, ${alpha})`;
-        ctx.lineWidth = 1.5 * dpr;
-        ctx.moveTo(mapX(fullTrail[i].x, w) * dpr, mapY(fullTrail[i].y, h) * dpr);
-        ctx.lineTo(mapX(fullTrail[i + 1].x, w) * dpr, mapY(fullTrail[i + 1].y, h) * dpr);
+        for (let i = 0; i < totalPts - 1; i++) {
+          const ratio = totalPts > 2 ? i / (totalPts - 2) : 1;
+          if (ratio >= bandLo && (isLast ? ratio <= bandHi : ratio < bandHi)) {
+            ctx.moveTo(mapX(fullTrail[i].x, w) * dpr, mapY(fullTrail[i].y, h) * dpr);
+            ctx.lineTo(mapX(fullTrail[i + 1].x, w) * dpr, mapY(fullTrail[i + 1].y, h) * dpr);
+          }
+        }
         ctx.stroke();
+        ctx.fillStyle = `rgba(${plotTheme.trail}, ${dotAlpha})`;
+        ctx.beginPath();
+        for (let i = 0; i < totalPts - 1; i++) {
+          const ratio = totalPts > 2 ? i / (totalPts - 2) : 1;
+          if (ratio >= bandLo && (isLast ? ratio <= bandHi : ratio < bandHi)) {
+            const px = mapX(fullTrail[i].x, w) * dpr;
+            const py = mapY(fullTrail[i].y, h) * dpr;
+            ctx.moveTo(px + dotR, py);
+            ctx.arc(px, py, dotR, 0, Math.PI * 2);
+          }
+        }
+        ctx.fill();
       }
     }
 
-    // Draw trail dots with fading (exclude last — that's the red dot)
-    for (let i = 0; i < totalPts - 1; i++) {
-      const ratio = totalPts > 2 ? i / (totalPts - 2) : 1;
-      const alpha = fadeFloor + ratio * (0.65 - fadeFloor);
-      const px = mapX(fullTrail[i].x, w) * dpr;
-      const py = mapY(fullTrail[i].y, h) * dpr;
-      ctx.beginPath();
-      ctx.arc(px, py, 2.5 * dpr, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${plotTheme.trail}, ${alpha})`;
-      ctx.fill();
-    }
-
-    // Draw current point (red circle with small inner dot)
     if (currentPoint) {
       const cx = mapX(currentPoint.x, w) * dpr;
       const cy = mapY(currentPoint.y, h) * dpr;
@@ -428,13 +453,11 @@ const animScatter = (function() {
       ctx.fill();
     }
 
-    // Draw saved point markers & labels on top of everything
     drawSavedPoints(w, h);
 
     requestAnimationFrame(draw);
   }
 
-  // Start the animation loop
   resizeCanvas();
   requestAnimationFrame(draw);
 
@@ -446,7 +469,6 @@ const animScatter = (function() {
     lerpT = 1;
   }
 
-  // Saved points overlay: [{x, y, label}, ...]
   let savedPointsOverlay = [];
 
   function setSavedPoints(pts) {
@@ -462,14 +484,12 @@ const animScatter = (function() {
     for (const pt of savedPointsOverlay) {
       const px = mapX(pt.x, w) * dpr;
       const py = mapY(pt.y, h) * dpr;
-      // Circle marker (no fill)
       const r = 4 * dpr;
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.strokeStyle = isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(80,80,80,0.9)";
       ctx.lineWidth = 1.5 * dpr;
       ctx.stroke();
-      // Label
       if (pt.label) {
         ctx.fillStyle = isDarkMode ? "#fff" : "rgba(80,80,80,0.9)";
         ctx.fillText(pt.label, px + r + 2 * dpr, py - 2 * dpr);
@@ -478,36 +498,52 @@ const animScatter = (function() {
     ctx.restore();
   }
 
-  return { pushTarget, clear, rebuildVisibleCache, setSavedPoints };
-})();
+  return { pushTarget, clear, rebuildVisibleCache, setSavedPoints, config: scatterCfg };
+}
+
+// Create scatter plot instances from config
+const animScatters = [];
+if (typeof SCATTER_CONFIGS !== 'undefined') {
+  SCATTER_CONFIGS.forEach(function(cfg, idx) {
+    const instance = createAnimScatter(
+      "animated_scatter_canvas_" + idx,
+      "anim_scatter_option_" + idx,
+      cfg
+    );
+    if (instance) animScatters.push(instance);
+  });
+}
 
 function updateAnimatedScatter() {
-  if (!animScatter) return;
-  // Rebuild cached visible points on new data arrival
-  animScatter.rebuildVisibleCache();
-  const cpuIdx = sensorToSeriesMap[SCATTER_CONFIG.y];
-  const ambientIdx = sensorToSeriesMap[SCATTER_CONFIG.x];
-  if (!cpuIdx || !ambientIdx) return;
-  const len = plotData[0].length;
+  if (animScatters.length === 0) return;
+  const len = plotData[0] ? plotData[0].length : 0;
   if (len === 0) return;
-  const ambient = plotData[ambientIdx][len - 1];
-  const cpu = plotData[cpuIdx][len - 1];
-  if (ambient != null && cpu != null && !isNaN(ambient) && !isNaN(cpu)) {
-    animScatter.pushTarget(ambient, cpu);
-  }
 
-  // Update saved points overlay — use actual sensor values (same as pts CSV)
-  if (sensorData && sensorData.saved_points && sensorData.saved_points.length > 0) {
-    var overlay = [];
-    for (var i = 0; i < sensorData.saved_points.length; i++) {
-      var sp = sensorData.saved_points[i];
-      var sx = parseFloat(sp.sensors[SCATTER_CONFIG.x]);
-      var sy = parseFloat(sp.sensors[SCATTER_CONFIG.y]);
-      if (!isNaN(sx) && !isNaN(sy)) {
-        overlay.push({ x: sx, y: sy, label: sp.label || "" });
-      }
+  for (var s = 0; s < animScatters.length; s++) {
+    var sc = animScatters[s];
+    sc.rebuildVisibleCache();
+    var yIdx = sensorToSeriesMap[sc.config.y];
+    var xIdx = sensorToSeriesMap[sc.config.x];
+    if (!yIdx || !xIdx) continue;
+    var xVal = plotData[xIdx][len - 1];
+    var yVal = plotData[yIdx][len - 1];
+    if (xVal != null && yVal != null && !isNaN(xVal) && !isNaN(yVal)) {
+      sc.pushTarget(xVal, yVal);
     }
-    animScatter.setSavedPoints(overlay);
+
+    // Update saved points overlay
+    if (sensorData && sensorData.saved_points && sensorData.saved_points.length > 0) {
+      var overlay = [];
+      for (var i = 0; i < sensorData.saved_points.length; i++) {
+        var sp = sensorData.saved_points[i];
+        var sx = parseFloat(sp.sensors[sc.config.x]);
+        var sy = parseFloat(sp.sensors[sc.config.y]);
+        if (!isNaN(sx) && !isNaN(sy)) {
+          overlay.push({ x: sx, y: sy, label: sp.label || "" });
+        }
+      }
+      sc.setSavedPoints(overlay);
+    }
   }
 }
 
@@ -532,7 +568,9 @@ const animTS = (function() {
   let targetTime = 0;      // latest sample timestamp (target)
   let currentTime = 0;     // smoothly interpolated timestamp
   let lastFrameTime = 0;   // for delta-time-based lerp
-  const SMOOTH_RATE = 8;   // higher = snappier (units: 1/sec)
+  // Smooth rate: arrive ~95% at 90% of the measured sample interval,
+  // so the animation fills nearly the whole gap between samples.
+  function getSmoothRate() { return 3 / (0.9 * samplePeriodSec()); }
 
   // Cached Y-range per unit group — rebuilt on data arrival, reused across frames
   // { unit: { yMin, yMax } }
@@ -615,7 +653,7 @@ const animTS = (function() {
     const now = performance.now();
     const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0.016;
     lastFrameTime = now;
-    const alpha = 1 - Math.exp(-SMOOTH_RATE * dt);
+    const alpha = 1 - Math.exp(-getSmoothRate() * dt);
     for (const key in seriesTargets) {
       if (seriesCurrent[key] !== undefined) {
         seriesCurrent[key] = lerp(seriesCurrent[key], seriesTargets[key], alpha);
@@ -668,14 +706,14 @@ const animTS = (function() {
       tMax = currentTime;
       tMin = currentTime - 60;
       for (let i = dataLen - 1; i >= 0; i--) {
-        if (plotData[0][i] < tMin) { startIdx = i + 1; break; }
+        if (plotData[0][i] < tMin) { startIdx = Math.max(0, i - 5); break; }
       }
     } else {
       // "30min" mode: show last 30 minutes, no interpolation
       tMax = lastDataTime;
       tMin = lastDataTime - 1800;
       for (let i = dataLen - 1; i >= 0; i--) {
-        if (plotData[0][i] < tMin) { startIdx = i + 1; break; }
+        if (plotData[0][i] < tMin) { startIdx = Math.max(0, i - 5); break; }
       }
     }
 
@@ -689,9 +727,16 @@ const animTS = (function() {
     const plotW = w - PAD_LEFT - PAD_RIGHT;
     const mapX = (t) => (PAD_LEFT + (t - tMin) / tRange * plotW) * dpr;
 
+    // Downsample to ~1 point per 2 CSS pixels (both modes)
+    const maxPts = Math.min(600, Math.max(100, Math.round(plotW / 2)));
     let step = 1;
-    if (mode === "30min" && visibleLen > 600) {
-      step = Math.ceil(visibleLen / 600);
+    if (visibleLen > maxPts) {
+      step = Math.ceil(visibleLen / maxPts);
+    }
+    // Align startIdx to a multiple of step so the same data points are
+    // selected regardless of how the sliding window shifts frame-to-frame.
+    if (step > 1) {
+      startIdx = Math.ceil(startIdx / step) * step;
     }
 
     // Compute sub-plot regions
@@ -800,13 +845,30 @@ const animTS = (function() {
         };
       }
 
+      // Clip to subplot area so lines don't bleed past the Y-axis
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PAD_LEFT * dpr, spTop * dpr, (w - PAD_LEFT - PAD_RIGHT) * dpr, subH * dpr);
+      ctx.clip();
+
       // Draw series in this group
-      const fadeFrac = 0.15; // sigmoidal fade: 0 at 0%, full at 15%
-      const fadeCutoffT = tMin + tRange * fadeFrac;
+      const seriesColors = getSeriesColors();
+      const useSplines = (step === 1);
+
+      // Assign colors by base name so .pv/.sp pairs share a color
+      const baseNameColorMap = {};
+      let colorIdx = 0;
+      for (const { key } of seriesInGroup) {
+        const base = seriesBaseName(key);
+        if (!(base in baseNameColorMap)) {
+          baseNameColorMap[base] = seriesColors[colorIdx % seriesColors.length];
+          colorIdx++;
+        }
+      }
 
       for (let li = 0; li < seriesInGroup.length; li++) {
         const { key, si } = seriesInGroup[li];
-        const color = getSeriesColors()[li % getSeriesColors().length];
+        const color = baseNameColorMap[seriesBaseName(key)];
         const seriesArr = plotData[si + 1];
         const curVal = seriesCurrent[key];
 
@@ -816,54 +878,42 @@ const animTS = (function() {
           const idx = (step > 1 && i + step >= dataLen) ? dataLen - 1 : i;
           const v = seriesArr[idx];
           if (v != null && !isNaN(v)) {
-            pts.push({ px: mapX(plotData[0][idx]), py: localMapY(v), t: plotData[0][idx] });
+            pts.push({ px: mapX(plotData[0][idx]), py: localMapY(v) });
           }
           if (idx === dataLen - 1) break;
         }
-        // Interpolated tip (both time and value are smoothly interpolated)
+        // Interpolated tip
         if (pts.length > 0 && curVal != null && !isNaN(curVal)) {
           const tipT = mode === "1min" ? currentTime : lastDataTime;
-          pts.push({ px: mapX(tipT), py: localMapY(curVal), t: tipT });
+          pts.push({ px: mapX(tipT), py: localMapY(curVal) });
         }
         if (pts.length < 2) continue;
 
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5 * dpr;
-
-        // Find index where fade zone ends
-        let fadeEndIdx = 0;
-        while (fadeEndIdx < pts.length && pts[fadeEndIdx].t < fadeCutoffT) fadeEndIdx++;
-
-        // Draw fade zone segment-by-segment with sigmoidal alpha (Catmull-Rom curves)
-        if (fadeEndIdx > 0) {
-          const fadeEnd = Math.min(fadeEndIdx + 1, pts.length);
-          for (let j = 1; j < fadeEnd; j++) {
-            const segT = (pts[j - 1].t + pts[j].t) / 2;
-            const f = Math.max(0, Math.min(1, (segT - tMin) / (fadeCutoffT - tMin)));
-            const alpha = f * f * (3 - 2 * f); // smoothstep sigmoid
-            ctx.globalAlpha = alpha;
-            const cp = crCP(pts, j - 1);
-            ctx.beginPath();
-            ctx.moveTo(pts[j - 1].px, pts[j - 1].py);
-            ctx.bezierCurveTo(cp.cp1x, cp.cp1y, cp.cp2x, cp.cp2y, pts[j].px, pts[j].py);
-            ctx.stroke();
-          }
-        }
-
-        // Draw remaining (non-faded) portion as single smooth path
-        ctx.globalAlpha = 1.0;
-        if (fadeEndIdx < pts.length) {
-          const solidStart = Math.max(0, fadeEndIdx - 1); // overlap by 1 for continuity
-          ctx.beginPath();
-          ctx.moveTo(pts[solidStart].px, pts[solidStart].py);
-          for (let j = solidStart; j < pts.length - 1; j++) {
+        ctx.setLineDash(isSetpoint(key) ? [6 * dpr, 4 * dpr] : []);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].px, pts[0].py);
+        if (useSplines) {
+          for (let j = 0; j < pts.length - 1; j++) {
             const cp = crCP(pts, j);
             ctx.bezierCurveTo(cp.cp1x, cp.cp1y, cp.cp2x, cp.cp2y, pts[j + 1].px, pts[j + 1].py);
           }
-          ctx.stroke();
+        } else {
+          for (let j = 1; j < pts.length; j++) {
+            ctx.lineTo(pts[j].px, pts[j].py);
+          }
         }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.restore(); // end subplot clip
 
-        // Dot and floating label
+      // Dots and floating labels (outside clip so text in PAD_RIGHT area is visible)
+      for (let li = 0; li < seriesInGroup.length; li++) {
+        const { key } = seriesInGroup[li];
+        const color = baseNameColorMap[seriesBaseName(key)];
+        const curVal = seriesCurrent[key];
         if (curVal != null && !isNaN(curVal)) {
           const tipT = mode === "1min" ? currentTime : lastDataTime;
           const dotX = mapX(tipT);
@@ -903,12 +953,35 @@ function updateAnimatedTS() {
 }
 
 function seriesColor(key, si) {
-  // Group by unit and return the index within that group
+  // Group by unit, assign colors by base name so .pv/.sp pairs share a color
   const unit = sensorUnits[key] || "?";
+  const seenBases = new Set();
   let idx = 0;
   for (let i = 0; i < numericSensors.length; i++) {
     if (numericSensors[i] === key) break;
-    if ((sensorUnits[numericSensors[i]] || "?") === unit) idx++;
+    if ((sensorUnits[numericSensors[i]] || "?") === unit) {
+      const base = seriesBaseName(numericSensors[i]);
+      if (!seenBases.has(base)) {
+        seenBases.add(base);
+        idx++;
+      }
+    }
+  }
+  // If this key's base was already counted, reuse the same index
+  const myBase = seriesBaseName(key);
+  if (seenBases.has(myBase)) {
+    // Find the index assigned to that base
+    let baseIdx = 0;
+    const seen2 = new Set();
+    for (let i = 0; i < numericSensors.length; i++) {
+      if ((sensorUnits[numericSensors[i]] || "?") !== unit) continue;
+      const b = seriesBaseName(numericSensors[i]);
+      if (!seen2.has(b)) {
+        if (b === myBase) { idx = baseIdx; break; }
+        seen2.add(b);
+        baseIdx++;
+      }
+    }
   }
   return getSeriesColors()[idx % getSeriesColors().length];
 }
@@ -1096,12 +1169,17 @@ fetch('/config')
     if (s["Max Plot Points"]) MAX_PLOT_POINTS = Number(s["Max Plot Points"]) || 10000;
     if (s["Poll Interval (ms)"]) POLL_INTERVAL = Number(s["Poll Interval (ms)"]) || 100;
     // Apply control defaults from config
-    const csvFile = s["CSV Log File"];
-    const sampleFreq = s["Sample Frequency (Hz)"];
-    const logSub = s["Log Subsample"];
-    if (csvFile) controlConfig.textInputs[0].defaultValue = String(csvFile);
-    if (sampleFreq) controlConfig.textInputs[1].defaultValue = sampleFreq;
-    if (logSub) controlConfig.textInputs[2].defaultValue = logSub;
+    const configMap = {
+      "CSV Log File": "file_name",
+      "Sample Frequency (Hz)": "sample_frequency_hz",
+      "Log Subsample": "log_subsample",
+    };
+    for (const [settingKey, controlKey] of Object.entries(configMap)) {
+      if (s[settingKey] != null) {
+        const input = controlConfig.textInputs.find(t => t.key === controlKey);
+        if (input) input.defaultValue = s[settingKey];
+      }
+    }
   })
   .catch(err => console.warn("Could not fetch /config, using defaults:", err))
   .finally(() => {
@@ -1166,6 +1244,17 @@ let lastDataTimestamp = 0;
 
 let POLL_INTERVAL = 100; // Overridden by config if available
 
+// Measured sample period (ms) — tracks actual time between new data arrivals.
+// Used by animation lerps so they fill the real inter-sample gap.
+let measuredSamplePeriod = 0;
+let _lastSampleArrival = 0;
+// Best estimate of sample period in seconds (measured > configured > fallback)
+function samplePeriodSec() {
+  if (measuredSamplePeriod > 0) return measuredSamplePeriod / 1000;
+  return POLL_INTERVAL / 1000;
+}
+
+let _lastPollHadData = false;
 function fetchSensorData() {
   if (stopped) return;
   const fetchStart = performance.now();
@@ -1190,6 +1279,7 @@ function fetchSensorData() {
       const samples = data.samples;
       sensorData = data;
       instrumentFetchCount++;
+      _lastPollHadData = samples.length > 0;
 
       // Restore pulse on successful fetch
       var pulse = document.getElementById('clock_pulse');
@@ -1223,6 +1313,19 @@ function fetchSensorData() {
 
       // Add ALL new samples to plot (catches up after background throttling)
       if (samples.length > 0) {
+        // Measure actual inter-sample period from wall-clock arrivals
+        const nowMs = performance.now();
+        if (_lastSampleArrival > 0) {
+          const gap = nowMs - _lastSampleArrival;
+          // Exponential moving average, clamped to reasonable range
+          if (measuredSamplePeriod > 0) {
+            measuredSamplePeriod = measuredSamplePeriod * 0.7 + gap * 0.3;
+          } else {
+            measuredSamplePeriod = gap;
+          }
+        }
+        _lastSampleArrival = nowMs;
+
         samples.forEach(sample => {
           plotData[0].push(sample.timestamp);
           numericSensors.forEach((key, index) => {
@@ -1252,7 +1355,7 @@ function fetchSensorData() {
         updatePIDStatus(data.pid_status);
       }
       if (typeof updateInterlockStatus === 'function' && data.tripped_interlocks) {
-        updateInterlockStatus(data.tripped_interlocks, data.sensors);
+        updateInterlockStatus(data.tripped_interlocks, data.sensors, data.latched_interlocks);
         var pulse = document.getElementById('clock_pulse');
         if (pulse) {
           pulse.classList.toggle('tripped', data.tripped_interlocks.length > 0);
@@ -1275,8 +1378,10 @@ function fetchSensorData() {
       if (pulse) pulse.classList.add('dead');
     })
     .finally(() => {
-      // Schedule next poll only after this one completes (sequential, no pile-up)
-      setTimeout(fetchSensorData, POLL_INTERVAL);
+      // Poll again quickly after receiving data (tight event response);
+      // back off to POLL_INTERVAL when idle (no new samples).
+      const delay = _lastPollHadData ? 10 : POLL_INTERVAL;
+      setTimeout(fetchSensorData, delay);
     });
 }
 
@@ -1522,7 +1627,7 @@ function saveFullTimeSeries(stamp) {
   const ctx = offscreen.getContext('2d');
 
   // Background
-  const bgColor = isDarkMode ? '#1a1a2e' : '#ffffff';
+  const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || (isDarkMode ? '#000000' : '#ffffff');
   const textColor = isDarkMode ? '#ccccdd' : '#333333';
   const gridColor = isDarkMode ? '#2a2a4e' : '#eeeeee';
   const axisColor = isDarkMode ? '#444444' : '#cccccc';
@@ -1631,14 +1736,32 @@ function saveFullTimeSeries(stamp) {
       }
     }
 
+    // Clip to subplot area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_LEFT, spTop, plotW, subH);
+    ctx.clip();
+
+    // Assign colors by base name so .pv/.sp pairs share a color
+    const dlBaseColorMap = {};
+    let dlColorIdx = 0;
+    for (const { key } of seriesInGroup) {
+      const base = seriesBaseName(key);
+      if (!(base in dlBaseColorMap)) {
+        dlBaseColorMap[base] = getSeriesColors()[dlColorIdx % getSeriesColors().length];
+        dlColorIdx++;
+      }
+    }
+
     // Draw series
     for (let li = 0; li < seriesInGroup.length; li++) {
       const { key, si } = seriesInGroup[li];
-      const color = getSeriesColors()[li % getSeriesColors().length];
+      const color = dlBaseColorMap[seriesBaseName(key)];
       const arr = plotData[si + 1];
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
+      ctx.setLineDash(isSetpoint(key) ? [6, 4] : []);
       ctx.beginPath();
       let started = false;
       for (let i = 0; i < dataLen; i += step) {
@@ -1650,9 +1773,15 @@ function saveFullTimeSeries(stamp) {
         else ctx.lineTo(px, py);
       }
       ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore(); // end subplot clip
 
-      // Label at right edge
-      const lastVal = arr[dataLen - 1];
+    // Labels at right edge (outside clip so they render in PAD_RIGHT)
+    for (let li = 0; li < seriesInGroup.length; li++) {
+      const { key, si } = seriesInGroup[li];
+      const color = dlBaseColorMap[seriesBaseName(key)];
+      const lastVal = plotData[si + 1][dataLen - 1];
       if (lastVal != null && !isNaN(lastVal)) {
         ctx.fillStyle = color;
         ctx.font = "11px 'DIN', sans-serif";
@@ -1674,7 +1803,7 @@ function saveScreenshot(stamp) {
     return Promise.resolve();
   }
   return html2canvas(document.body, {
-    backgroundColor: isDarkMode ? '#1a1a2e' : '#f8f9fa',
+    backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || (isDarkMode ? '#000000' : '#f8f9fa'),
     scale: 1,
     useCORS: true,
     logging: false,
@@ -1726,7 +1855,7 @@ document.getElementById('clear_ts_btn').addEventListener('click', function() {
     plotData[i] = [];
   }
   legendRowCache = null;  // force legend rebuild
-  if (animScatter) animScatter.clear();
+  animScatters.forEach(function(sc) { sc.clear(); });
 });
 
 // Save Figure button

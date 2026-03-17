@@ -130,15 +130,54 @@ def load_config(filepath):
         name = d.get("Interlock Name")
         if not name:
             continue
+        # Parse compound actions (semicolon-separated)
+        raw_actions = str(d.get("Action", "alarm")).strip().lower()
+        raw_targets = str(d.get("Target", "")).strip() if d.get("Target") else ""
+        raw_values = str(d.get("Action Value", "")).strip() if d.get("Action Value") is not None else ""
+        action_list = [a.strip() for a in raw_actions.split(";") if a.strip()]
+        target_list = [t.strip() for t in raw_targets.split(";")]
+        value_list = [v.strip() for v in str(raw_values).split(";")]
+        # Pad shorter lists to match action_list length
+        while len(target_list) < len(action_list):
+            target_list.append("")
+        while len(value_list) < len(action_list):
+            value_list.append("")
+        actions = []
+        for i, act in enumerate(action_list):
+            val = _to_number(value_list[i]) if value_list[i] else None
+            actions.append({"action": act, "target": target_list[i], "value": val})
+
+        # Parse recovery actions (same format)
+        raw_rec_actions = str(d.get("Recovery Action", "")).strip().lower() if d.get("Recovery Action") else ""
+        raw_rec_targets = str(d.get("Recovery Target", "")).strip() if d.get("Recovery Target") else ""
+        raw_rec_values = str(d.get("Recovery Value", "")).strip() if d.get("Recovery Value") is not None else ""
+        recovery = []
+        if raw_rec_actions:
+            rec_act_list = [a.strip() for a in raw_rec_actions.split(";") if a.strip()]
+            rec_tgt_list = [t.strip() for t in raw_rec_targets.split(";")]
+            rec_val_list = [v.strip() for v in str(raw_rec_values).split(";")]
+            while len(rec_tgt_list) < len(rec_act_list):
+                rec_tgt_list.append("")
+            while len(rec_val_list) < len(rec_act_list):
+                rec_val_list.append("")
+            for i, act in enumerate(rec_act_list):
+                val = _to_number(rec_val_list[i]) if rec_val_list[i] else None
+                recovery.append({"action": act, "target": rec_tgt_list[i], "value": val})
+
         interlocks.append({
             "name": str(name).strip(),
             "channel": str(d.get("Channel", "")).strip(),
             "condition": str(d.get("Condition", ">")).strip(),
             "threshold": _to_number(d.get("Threshold")) or 0,
-            "action": str(d.get("Action", "alarm")).strip().lower(),
-            "target": str(d.get("Target", "")).strip() if d.get("Target") else "",
-            "action_value": _to_number(d.get("Action Value")),
+            "actions": actions,
+            # Keep legacy single-action fields for backwards compat
+            "action": action_list[0] if action_list else "alarm",
+            "target": target_list[0] if target_list else "",
+            "action_value": _to_number(value_list[0]) if value_list and value_list[0] else None,
+            "recovery": recovery,
+            "latch": _parse_bool(d.get("Latch", False)),
             "enabled": _parse_bool(d.get("Enabled", True)),
+            "group": str(d.get("Group", "")).strip() if d.get("Group") else "",
             "notes": str(d.get("Notes", "")) if d.get("Notes") else "",
         })
     config["interlocks"] = interlocks
@@ -208,9 +247,20 @@ def load_config(filepath):
                     pv_name = remainder
                 col_info["type"] = "pid_setpoint"
                 col_info["pv_channel"] = pv_name
+            elif h_stripped.startswith("Watch: "):
+                remainder = h_stripped[7:].strip()
+                if "(" in remainder:
+                    ch_name = remainder[:remainder.index("(")].strip()
+                else:
+                    ch_name = remainder
+                col_info["type"] = "watch"
+                col_info["channel_name"] = ch_name
             else:
                 col_info["type"] = "output_channel"
-                col_info["channel_name"] = h_stripped
+                if "(" in h_stripped:
+                    col_info["channel_name"] = h_stripped[:h_stripped.index("(")].strip()
+                else:
+                    col_info["channel_name"] = h_stripped
             # Extract tolerance for this column
             tol = None
             if tolerance_row:
@@ -227,12 +277,20 @@ def load_config(filepath):
             setpoints = {}
             for col in step_columns:
                 raw_val = d.get(col["header"])
+                if isinstance(raw_val, str) and raw_val.strip().upper() in ("NA", "N/A", ""):
+                    continue
                 val = _to_number(raw_val)
-                if val is not None:
+                if val is not None and isinstance(val, (int, float)):
                     if col["type"] == "pid_setpoint":
                         setpoints[col["header"]] = {
                             "type": "pid_setpoint",
                             "pv_channel": col["pv_channel"],
+                            "value": val,
+                        }
+                    elif col["type"] == "watch":
+                        setpoints[col["header"]] = {
+                            "type": "watch",
+                            "channel_name": col["channel_name"],
                             "value": val,
                         }
                     else:

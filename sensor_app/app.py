@@ -57,8 +57,17 @@ for loop_name, loop_cfg in config.get("control_loops", {}).items():
 
 # Dashboard settings from config (passed to template)
 _settings = config.get("settings", {})
-SCATTER_X = str(_settings.get("Scatter X Channel", "")).strip()
-SCATTER_Y = str(_settings.get("Scatter Y Channel", "")).strip()
+SCATTER_PLOTS = []
+# Support multiple scatter plots: "Scatter X Channel", "Scatter X Channel 2", etc.
+_sx = str(_settings.get("Scatter X Channel", "")).strip()
+_sy = str(_settings.get("Scatter Y Channel", "")).strip()
+if _sx and _sy:
+    SCATTER_PLOTS.append({"x": _sx, "y": _sy})
+for _n in range(2, 10):
+    _sx = str(_settings.get(f"Scatter X Channel {_n}", "")).strip()
+    _sy = str(_settings.get(f"Scatter Y Channel {_n}", "")).strip()
+    if _sx and _sy:
+        SCATTER_PLOTS.append({"x": _sx, "y": _sy})
 
 # ---------------------------------------------------------------------------
 # Create and start experiment engine
@@ -76,7 +85,7 @@ sampler_thread.start()
 @app.route('/')
 def index():
     return render_template('index.html', sensor_units=SENSOR_UNITS,
-                           scatter_x=SCATTER_X, scatter_y=SCATTER_Y)
+                           scatter_plots=SCATTER_PLOTS)
 
 
 @app.route('/data_since/<path:since>')
@@ -154,6 +163,8 @@ def get_config():
                 "channel": il["channel"],
                 "condition": il["condition"],
                 "threshold": il["threshold"],
+                "latch": il.get("latch", False),
+                "group": il.get("group", ""),
             })
     frontend_config["step_series"] = config.get("step_series", [])
     frontend_config["step_columns"] = config.get("step_columns", [])
@@ -181,11 +192,34 @@ def set_manual_output():
     return jsonify({"status": "ok"})
 
 
+@app.route('/pid/autotune', methods=['POST'])
+def pid_autotune():
+    data = request.get_json()
+    loop = data["loop"]
+    action = data.get("action", "start")
+    if action == "start":
+        result = engine.start_autotune(loop)
+    elif action == "cancel":
+        result = engine.cancel_autotune(loop)
+    elif action == "status":
+        result = engine.get_autotune_status(loop)
+    else:
+        result = {"error": "unknown action"}
+    return jsonify(result)
+
+
 @app.route('/output/set', methods=['POST'])
 def set_output():
     data = request.get_json()
     engine.set_output(data["channel"], float(data["value"]))
     return jsonify({"status": "ok"})
+
+
+@app.route('/interlock/reset', methods=['POST'])
+def reset_interlock():
+    data = request.get_json()
+    result = engine.reset_interlock(data["name"])
+    return jsonify(result)
 
 
 @app.route('/step_series/mode', methods=['POST'])
