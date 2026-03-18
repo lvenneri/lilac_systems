@@ -281,3 +281,46 @@ class AlicatDriver(DriverBase):
         self._ser = None
         self._cache.clear()
         log.info("Alicat driver closed (unit '%s').", self._unit_id)
+
+
+if __name__ == "__main__":
+    import sys
+    import traceback
+    from datetime import datetime
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    addr = sys.argv[1] if len(sys.argv) > 1 else "/dev/tty.usbserial-0001"
+    unit_id = sys.argv[2] if len(sys.argv) > 2 else "A"
+    config = {
+        "address": addr,
+        "query_command": unit_id,
+        "timeout": 2,
+        "poll_rate": 0.2,
+    }
+
+    # P = Absolute pressure, T = Gas temperature,
+    # VOL_FLOW = Volumetric flow rate, MASS_FLOW = Mass flow rate,
+    # SETPOINT = Controller setpoint (controllers only)
+    channels = ["P", "T", "VOL_FLOW", "MASS_FLOW", "SETPOINT"]
+
+    print(f"Alicat test — port: {addr}, unit ID: {unit_id}")
+    print(f"Channels: {channels}")
+
+    drv = AlicatDriver(config)
+    try:
+        drv.connect()
+        print(f"Unit type: {'controller' if drv._is_controller else 'meter'}")
+        for i in range(10):
+            values = {ch: drv.read_channel(ch) for ch in channels}
+            print(f"[{datetime.now():%H:%M:%S.%f}] #{i+1:02d}  {values}")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        drv.close()

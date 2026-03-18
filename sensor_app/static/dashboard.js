@@ -140,6 +140,7 @@ function initializePlot() {
 
 // ===== Nice tick generation (1-2-5 sequence) =====
 function niceTicks(lo, hi, maxTicks) {
+  if (!isFinite(lo) || !isFinite(hi)) return [0];
   const range = hi - lo;
   if (range <= 0) return [lo];
   const rawStep = range / maxTicks;
@@ -560,7 +561,7 @@ const animTS = (function() {
   const PAD_LEFT = 50;
   const PAD_BOTTOM = 30;
   const PAD_TOP = 10;
-  const PAD_RIGHT = 100;
+  const PAD_RIGHT = 130;
 
   // Per-series state for smooth interpolation
   let seriesTargets = {};  // key -> target value
@@ -1367,6 +1368,9 @@ function fetchSensorData() {
       if (typeof updateStepSeriesStatus === 'function' && data.step_series) {
         updateStepSeriesStatus(data.step_series);
       }
+      if (typeof updateDriverStatus === 'function' && data.instrument_status) {
+        updateDriverStatus(data.instrument_status);
+      }
 
       if (!firstFetchComplete) {
         firstFetchComplete = true;
@@ -1387,46 +1391,187 @@ function fetchSensorData() {
 
 // fetchSensorData() is called from the /config fetch .finally() block above
 
-// Font size step functionality
+// ===== Layout persistence =====
+const LAYOUT_KEY = 'lilac_dashboard_layout';
+
+function loadLayout() {
+  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {}; } catch(e) { return {}; }
+}
+
+function saveLayout(patch) {
+  const layout = Object.assign(loadLayout(), patch);
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+}
+
+// ===== Column grid engine =====
+const COL_COUNT_MIN = 2;
+const COL_COUNT_MAX = 6;
+const COL_MIN_PX = 120;
+const DIVIDER_PX = 6;
+let currentColCount = 3;
+let currentColWidths = null; // percentages array, sum ≈ 100
+
+// Read initial panel assignment from the Jinja-rendered 3-column HTML
+function readDefaultPanelAssignment() {
+  const cols = Array.from(document.querySelectorAll('.dashboard-col'));
+  const assignment = []; // array of arrays
+  cols.forEach(col => {
+    assignment.push(
+      Array.from(col.querySelectorAll('.draggable-panel'))
+        .map(p => p.getAttribute('data-panel-id'))
+    );
+  });
+  return assignment;
+}
+
+// Build (or rebuild) the column grid: columns + dividers, distribute panels
+function buildColumns(colCount, colWidths, panelOrder) {
+  const container = document.querySelector('.dashboard-columns');
+
+  // Detach all panels (preserve references)
+  const allPanels = Array.from(container.querySelectorAll('.draggable-panel'));
+  allPanels.forEach(p => p.remove());
+
+  // Remove old columns and dividers
+  container.innerHTML = '';
+
+  // Create columns and dividers
+  const colEls = [];
+  for (let i = 0; i < colCount; i++) {
+    if (i > 0) {
+      const divider = document.createElement('div');
+      divider.className = 'col-divider';
+      divider.setAttribute('data-divider-index', i - 1);
+      container.appendChild(divider);
+    }
+    const col = document.createElement('div');
+    col.className = 'dashboard-col';
+    container.appendChild(col);
+    colEls.push(col);
+  }
+
+  // Build grid-template-columns: "w% 6px w% 6px w%"
+  applyGridTemplate(container, colWidths);
+
+  // Distribute panels into columns
+  const placed = new Set();
+  if (panelOrder) {
+    panelOrder.forEach((panelIds, colIdx) => {
+      const target = colEls[Math.min(colIdx, colCount - 1)];
+      panelIds.forEach(pid => {
+        const panel = allPanels.find(p => p.getAttribute('data-panel-id') === pid);
+        if (panel) {
+          target.appendChild(panel);
+          placed.add(pid);
+        }
+      });
+    });
+  }
+  // Any panels not in the saved order go to the last column
+  allPanels.forEach(p => {
+    if (!placed.has(p.getAttribute('data-panel-id'))) {
+      colEls[colCount - 1].appendChild(p);
+    }
+  });
+
+  // Wire up drag-drop and divider drag
+  setupDragDrop();
+  setupDividerDrag();
+}
+
+function applyGridTemplate(container, widths) {
+  const parts = [];
+  widths.forEach((w, i) => {
+    if (i > 0) parts.push(DIVIDER_PX + 'px');
+    parts.push(w + '%');
+  });
+  container.style.gridTemplateColumns = parts.join(' ');
+}
+
+function equalWidths(n) {
+  const w = 100 / n;
+  return Array.from({ length: n }, () => w);
+}
+
+// ===== Column count control =====
+function applyColCount(count, preserveWidths) {
+  const oldCount = currentColCount;
+  currentColCount = Math.max(COL_COUNT_MIN, Math.min(COL_COUNT_MAX, count));
+  document.getElementById('col_count_display').textContent = currentColCount;
+
+  // Read current panel arrangement before rebuild
+  const panelOrder = readCurrentPanelOrder();
+
+  // Adjust panel assignment for new column count
+  if (currentColCount < oldCount) {
+    // Merge panels from removed columns into the last column
+    const merged = panelOrder.slice(0, currentColCount);
+    for (let i = currentColCount; i < panelOrder.length; i++) {
+      merged[currentColCount - 1] = merged[currentColCount - 1].concat(panelOrder[i]);
+    }
+    panelOrder.length = 0;
+    merged.forEach(a => panelOrder.push(a));
+  } else if (currentColCount > oldCount) {
+    // Redistribute all panels evenly across the new column count
+    const allPids = panelOrder.flat();
+    panelOrder.length = 0;
+    for (let i = 0; i < currentColCount; i++) panelOrder.push([]);
+    allPids.forEach((pid, i) => {
+      panelOrder[i % currentColCount].push(pid);
+    });
+  }
+
+  // Reset to equal widths on column count change
+  currentColWidths = preserveWidths && currentColWidths && currentColWidths.length === currentColCount
+    ? currentColWidths : equalWidths(currentColCount);
+
+  buildColumns(currentColCount, currentColWidths, panelOrder);
+  saveLayout({ colCount: currentColCount, colWidths: currentColWidths, panelOrder: panelOrder });
+}
+
+document.getElementById('col_decrease').addEventListener('click', function() {
+  applyColCount(currentColCount - 1);
+});
+document.getElementById('col_increase').addEventListener('click', function() {
+  applyColCount(currentColCount + 1);
+});
+
+// ===== Font size =====
 const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 22;
 const FONT_SIZE_STEP = 1;
-let currentFontSize = 14; // Default
+let currentFontSize = 14;
 
 function applyFontSize(size) {
   currentFontSize = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
   document.body.style.fontSize = currentFontSize + 'px';
+  saveLayout({ fontSize: currentFontSize });
 }
 
 document.getElementById('font_decrease').addEventListener('click', function() {
   applyFontSize(currentFontSize - FONT_SIZE_STEP);
 });
-
 document.getElementById('font_increase').addEventListener('click', function() {
   applyFontSize(currentFontSize + FONT_SIZE_STEP);
 });
 
-// Set initial font size
-applyFontSize(14);
-
-// Dark mode toggle
+// ===== Dark mode toggle =====
 document.getElementById('dark_mode_toggle').addEventListener('click', function() {
   isDarkMode = !isDarkMode;
   document.body.classList.toggle('dark-mode', isDarkMode);
   readPlotTheme();
   this.innerHTML = isDarkMode ? '&#9788;' : '&#9789;';
+  saveLayout({ darkMode: isDarkMode });
 });
 
-// Collapse a panel: snapshot height then animate to 0
+// ===== Panel collapse/expand =====
 function collapsePanel(panel) {
   if (panel.classList.contains('collapsed')) return;
   panel.style.maxHeight = panel.scrollHeight + 'px';
-  // Force reflow so the browser registers the explicit value before transitioning
   panel.offsetHeight; // eslint-disable-line no-unused-expressions
   panel.classList.add('collapsed');
 }
 
-// Expand a panel: animate from 0 to scrollHeight, then release to 'none'
 function expandPanel(panel) {
   if (!panel.classList.contains('collapsed')) return;
   panel.classList.remove('collapsed');
@@ -1440,138 +1585,254 @@ function expandPanel(panel) {
   panel.addEventListener('transitionend', onEnd);
 }
 
-// Hide All / Show All panels functionality
 document.getElementById('hide_all_panels').addEventListener('click', function() {
   document.querySelectorAll('.panel-body-collapsible').forEach(collapsePanel);
-  document.querySelectorAll('.toggle-icon').forEach(icon => {
-    icon.textContent = '+';
-  });
+  document.querySelectorAll('.toggle-icon').forEach(icon => { icon.textContent = '+'; });
+  saveCollapsedState();
 });
 
 document.getElementById('show_all_panels').addEventListener('click', function() {
   document.querySelectorAll('.panel-body-collapsible').forEach(expandPanel);
-  document.querySelectorAll('.toggle-icon').forEach(icon => {
-    icon.textContent = '−';
-  });
+  document.querySelectorAll('.toggle-icon').forEach(icon => { icon.textContent = '−'; });
+  saveCollapsedState();
 });
 
-// Panel toggle functionality
-document.querySelectorAll('.toggle-panel').forEach(button => {
-  button.addEventListener('click', function() {
-    const targetId = this.getAttribute('data-target');
-    const targetBody = document.getElementById(targetId);
-    const icon = this.querySelector('.toggle-icon');
+// Panel toggle — uses event delegation so it works after DOM rebuilds
+document.addEventListener('click', function(e) {
+  const button = e.target.closest('.toggle-panel');
+  if (!button) return;
+  const targetId = button.getAttribute('data-target');
+  const targetBody = document.getElementById(targetId);
+  const icon = button.querySelector('.toggle-icon');
+  if (!targetBody) return;
 
-    if (targetBody.classList.contains('collapsed')) {
-      expandPanel(targetBody);
-      icon.textContent = '−';
-    } else {
-      collapsePanel(targetBody);
-      icon.textContent = '+';
-    }
-  });
+  if (targetBody.classList.contains('collapsed')) {
+    expandPanel(targetBody);
+    if (icon) icon.textContent = '−';
+  } else {
+    collapsePanel(targetBody);
+    if (icon) icon.textContent = '+';
+  }
+  saveCollapsedState();
 });
 
-// Function to initialize/update panel heights (ensures all panels start expanded)
 function initializePanelHeights() {
   document.querySelectorAll('.panel-body-collapsible').forEach(panel => {
-    panel.classList.remove('collapsed');
-    panel.style.maxHeight = 'none';
-    const button = document.querySelector(`[data-target="${panel.id}"]`);
-    if (button) {
-      const icon = button.querySelector('.toggle-icon');
-      if (icon) icon.textContent = '−';
+    if (!panel.classList.contains('collapsed')) {
+      panel.style.maxHeight = 'none';
+      const button = document.querySelector(`[data-target="${panel.id}"]`);
+      if (button) {
+        const icon = button.querySelector('.toggle-icon');
+        if (icon) icon.textContent = '−';
+      }
     }
   });
 }
 
-// Initialize panel heights after a short delay to ensure content is rendered
-setTimeout(initializePanelHeights, 100);
+// ===== Save helpers =====
+function readCurrentPanelOrder() {
+  const cols = document.querySelectorAll('.dashboard-col');
+  return Array.from(cols).map(col =>
+    Array.from(col.querySelectorAll('.draggable-panel'))
+      .map(p => p.getAttribute('data-panel-id'))
+  );
+}
 
-// Drag and Drop functionality for panel reorganization
+function savePanelOrder() {
+  saveLayout({ panelOrder: readCurrentPanelOrder() });
+}
+
+function saveCollapsedState() {
+  const collapsed = [];
+  document.querySelectorAll('.panel-body-collapsible').forEach(panel => {
+    if (panel.classList.contains('collapsed')) collapsed.push(panel.id);
+  });
+  saveLayout({ collapsed: collapsed });
+}
+
+// ===== Drag-and-drop (re-attachable after DOM rebuild) =====
 let draggedElement = null;
 
-document.querySelectorAll('.draggable-panel').forEach(panel => {
-  panel.addEventListener('dragstart', function(e) {
-    draggedElement = this;
-    this.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/html', this.innerHTML);
-  });
+function setupDragDrop() {
+  document.querySelectorAll('.draggable-panel').forEach(panel => {
+    panel.addEventListener('dragstart', function(e) {
+      draggedElement = this;
+      this.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/html', this.innerHTML);
+    });
 
-  panel.addEventListener('dragend', function(e) {
-    this.classList.remove('dragging');
-    // Remove drag-over class from all panels
-    document.querySelectorAll('.draggable-panel').forEach(p => {
-      p.classList.remove('drag-over');
+    panel.addEventListener('dragend', function() {
+      this.classList.remove('dragging');
+      document.querySelectorAll('.draggable-panel').forEach(p => p.classList.remove('drag-over'));
+      savePanelOrder();
+    });
+
+    panel.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      return false;
+    });
+
+    panel.addEventListener('dragenter', function() {
+      if (this !== draggedElement) this.classList.add('drag-over');
+    });
+
+    panel.addEventListener('dragleave', function() {
+      this.classList.remove('drag-over');
+    });
+
+    panel.addEventListener('drop', function(e) {
+      e.stopPropagation();
+      if (draggedElement !== this) {
+        const draggedCol = draggedElement.closest('.dashboard-col');
+        const dropCol = this.closest('.dashboard-col');
+        if (draggedCol === dropCol) {
+          const allPanels = Array.from(draggedCol.querySelectorAll('.draggable-panel'));
+          const draggedIndex = allPanels.indexOf(draggedElement);
+          const dropIndex = allPanels.indexOf(this);
+          if (draggedIndex < dropIndex) {
+            this.parentNode.insertBefore(draggedElement, this.nextSibling);
+          } else {
+            this.parentNode.insertBefore(draggedElement, this);
+          }
+        } else {
+          dropCol.insertBefore(draggedElement, this);
+        }
+      }
+      this.classList.remove('drag-over');
+      return false;
     });
   });
 
-  panel.addEventListener('dragover', function(e) {
-    if (e.preventDefault) {
-      e.preventDefault(); // Allows drop
-    }
-    e.dataTransfer.dropEffect = 'move';
-    return false;
+  // Allow dropping into empty columns
+  document.querySelectorAll('.dashboard-col').forEach(col => {
+    col.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    col.addEventListener('drop', function(e) {
+      e.preventDefault();
+      if (draggedElement && e.target === this) {
+        this.appendChild(draggedElement);
+      }
+    });
   });
+}
 
-  panel.addEventListener('dragenter', function(e) {
-    if (this !== draggedElement) {
-      this.classList.add('drag-over');
-    }
-  });
+// ===== Divider drag (column resize) =====
+function setupDividerDrag() {
+  const container = document.querySelector('.dashboard-columns');
+  container.querySelectorAll('.col-divider').forEach(divider => {
+    const idx = parseInt(divider.getAttribute('data-divider-index'));
 
-  panel.addEventListener('dragleave', function(e) {
-    this.classList.remove('drag-over');
-  });
+    divider.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      divider.classList.add('active');
+      const cols = Array.from(container.querySelectorAll('.dashboard-col'));
+      const containerWidth = container.getBoundingClientRect().width;
+      const usable = containerWidth - (currentColCount - 1) * DIVIDER_PX;
+      const colPx = cols.map(c => c.getBoundingClientRect().width);
+      const startX = e.clientX;
+      const leftIdx = idx;
+      const rightIdx = idx + 1;
+      const combined = colPx[leftIdx] + colPx[rightIdx];
 
-  panel.addEventListener('drop', function(e) {
-    if (e.stopPropagation) {
-      e.stopPropagation(); // Stops browser from redirecting
-    }
-
-    if (draggedElement !== this) {
-      // Get the column containers
-      const draggedCol = draggedElement.closest('.dashboard-col');
-      const dropCol = this.closest('.dashboard-col');
-
-      if (draggedCol === dropCol) {
-        // Reorder within same column
-        const allPanels = Array.from(draggedCol.querySelectorAll('.draggable-panel'));
-        const draggedIndex = allPanels.indexOf(draggedElement);
-        const dropIndex = allPanels.indexOf(this);
-
-        if (draggedIndex < dropIndex) {
-          this.parentNode.insertBefore(draggedElement, this.nextSibling);
-        } else {
-          this.parentNode.insertBefore(draggedElement, this);
-        }
-      } else {
-        // Move between columns - insert before the target
-        dropCol.insertBefore(draggedElement, this);
+      function onMove(e) {
+        const dx = e.clientX - startX;
+        let newLeft = Math.max(COL_MIN_PX, Math.min(combined - COL_MIN_PX, colPx[leftIdx] + dx));
+        let newRight = combined - newLeft;
+        const pxCopy = colPx.slice();
+        pxCopy[leftIdx] = newLeft;
+        pxCopy[rightIdx] = newRight;
+        currentColWidths = pxCopy.map(w => (w / usable) * 100);
+        applyGridTemplate(container, currentColWidths);
       }
 
+      function onUp() {
+        divider.classList.remove('active');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        saveLayout({ colWidths: currentColWidths });
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    // Double-click resets to equal widths
+    divider.addEventListener('dblclick', function() {
+      currentColWidths = equalWidths(currentColCount);
+      applyGridTemplate(container, currentColWidths);
+      saveLayout({ colWidths: currentColWidths });
+    });
+  });
+}
+
+// ===== Restore layout on load =====
+function restoreLayout() {
+  const layout = loadLayout();
+
+  // Migrate old panelOrder format (object keyed by DOM id -> array of arrays)
+  if (layout.panelOrder && !Array.isArray(layout.panelOrder)) {
+    layout.panelOrder = [
+      layout.panelOrder.col_left || [],
+      layout.panelOrder.col_middle || [],
+      layout.panelOrder.col_right || [],
+    ];
+    saveLayout({ panelOrder: layout.panelOrder });
+  }
+
+  // Read default assignment from the Jinja HTML before we rebuild
+  const defaultOrder = readDefaultPanelAssignment();
+  const colCount = layout.colCount || 3;
+  const colWidths = (layout.colWidths && layout.colWidths.length === colCount)
+    ? layout.colWidths : equalWidths(colCount);
+  const panelOrder = layout.panelOrder || defaultOrder;
+
+  currentColCount = colCount;
+  currentColWidths = colWidths;
+  document.getElementById('col_count_display').textContent = currentColCount;
+
+  buildColumns(currentColCount, currentColWidths, panelOrder);
+
+  // Font size
+  applyFontSize(layout.fontSize || 14);
+
+  // Dark mode
+  if (layout.darkMode) {
+    isDarkMode = true;
+    document.body.classList.add('dark-mode');
+    readPlotTheme();
+    document.getElementById('dark_mode_toggle').innerHTML = '&#9788;';
+  }
+
+  // Collapsed panels
+  if (layout.collapsed && layout.collapsed.length) {
+    layout.collapsed.forEach(id => {
+      const panel = document.getElementById(id);
+      if (panel) {
+        panel.classList.add('collapsed');
+        panel.style.maxHeight = '0px';
+        const button = document.querySelector(`[data-target="${id}"]`);
+        if (button) {
+          const icon = button.querySelector('.toggle-icon');
+          if (icon) icon.textContent = '+';
+        }
+      }
+    });
+  }
+
+  // Non-collapsed panels get proper max-height
+  document.querySelectorAll('.panel-body-collapsible').forEach(panel => {
+    if (!panel.classList.contains('collapsed')) {
+      panel.style.maxHeight = 'none';
     }
-
-    this.classList.remove('drag-over');
-    return false;
   });
-});
+}
 
-// Allow dropping into empty columns
-document.querySelectorAll('.dashboard-col').forEach(col => {
-  col.addEventListener('dragover', function(e) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  });
-
-  col.addEventListener('drop', function(e) {
-    e.preventDefault();
-    if (draggedElement && e.target === this) {
-      this.appendChild(draggedElement);
-    }
-  });
-});
+restoreLayout();
+setTimeout(initializePanelHeights, 100);
 
 // ===== Save Figure / Stop =====
 
@@ -1617,7 +1878,7 @@ function saveFullTimeSeries(stamp) {
 
   const SUBPLOT_H = 220;
   const GAP = 12;
-  const PAD_LEFT = 60, PAD_RIGHT = 120, PAD_TOP = 16, PAD_BOTTOM = 40;
+  const PAD_LEFT = 60, PAD_RIGHT = 150, PAD_TOP = 16, PAD_BOTTOM = 40;
   const W = 1600;
   const H = PAD_TOP + PAD_BOTTOM + numGroups * SUBPLOT_H + (numGroups - 1) * GAP;
 

@@ -21,6 +21,12 @@ Channel ID format (used in the Excel config "Channel ID" column):
 
 Instrument config "Address / Device" should be the NI-DAQmx device name
 for the chassis, e.g. "cDAQ1".
+
+All analog input tasks use hardware-timed (finite) sampling for
+compatibility with both on-demand and delta-sigma modules.  The
+``sample_rate`` (default 1000 Hz) and ``samps_per_chan`` (default 2)
+can be overridden globally via instrument_config or per-channel via
+channel_options.
 """
 
 import math
@@ -29,6 +35,7 @@ import logging
 
 import nidaqmx
 from nidaqmx.constants import (
+    AcquisitionType,
     RTDType,
     ResistanceConfiguration,
     ExcitationSource,
@@ -42,6 +49,10 @@ log = logging.getLogger(__name__)
 
 # Regex: "Mod3/ai0" -> groups (module="3", kind="ai", index="0")
 _CH_RE = re.compile(r"^Mod(\d+)/(ai|tc|rtd|ao|ai_poly|ai_custom)(\d+)$", re.IGNORECASE)
+
+# Hardware-timed sampling defaults
+_DEFAULT_SAMPLE_RATE = 10      # Hz – safe for delta-sigma cards (e.g. NI 9214)
+_DEFAULT_SAMPS_PER_CHAN = 2    # minimum finite buffer
 
 # Defaults – can be overridden per-channel via instrument_config["channel_options"]
 _TC_TYPE_DEFAULT = ThermocoupleType.K
@@ -59,6 +70,15 @@ _TC_TYPE_MAP = {
     "R": ThermocoupleType.R,
     "S": ThermocoupleType.S,
     "T": ThermocoupleType.T,
+}
+
+_RTD_TYPE_MAP = {
+    "PT_3750": RTDType.PT_3750,
+    "PT_3851": RTDType.PT_3851,
+    "PT_3911": RTDType.PT_3911,
+    "PT_3916": RTDType.PT_3916,
+    "PT_3920": RTDType.PT_3920,
+    "PT_3928": RTDType.PT_3928,
 }
 
 _RTD_WIRE_MAP = {
@@ -102,12 +122,18 @@ class NiCdaqDriver(DriverBase):
 
     def __init__(self, instrument_config):
         super().__init__(instrument_config)
-        self._device = instrument_config.get("address", "cDAQ1").strip()
+        raw = instrument_config.get("address", "cDAQ1").strip()
+        # Strip accidental "ModN" suffix — we only want the chassis name
+        self._device = re.sub(r"Mod\d+$", "", raw)
+        self._available_channels = set()  # populated by connect()
         self._tasks = {}       # channel_id -> nidaqmx.Task
         self._task_kind = {}   # channel_id -> "read" | "write"
         self._outputs = {}     # channel_id -> last written value (for readback)
         # Optional per-channel overrides from config
         self._channel_opts = instrument_config.get("channel_options", {})
+        # Global timing defaults (can be overridden per-channel in channel_options)
+        self._sample_rate = instrument_config.get("sample_rate", _DEFAULT_SAMPLE_RATE)
+        self._samps_per_chan = instrument_config.get("samps_per_chan", _DEFAULT_SAMPS_PER_CHAN)
 
     # -- helpers ----------------------------------------------------------
 
@@ -127,6 +153,41 @@ class NiCdaqDriver(DriverBase):
         """
         hw_kind = "ao" if kind == "ao" else "ai"  # ai_poly, ai_custom also map to "ai"
         return f"{self._device}Mod{module}/{hw_kind}{index}"
+
+    def _configure_hw_timing(self, task, channel_id=None):
+        """Configure finite hardware-timed sampling on an AI task.
+
+        Uses per-channel overrides from channel_options if available,
+        otherwise falls back to the driver-level defaults.
+        """
+        opts = self._channel_opts.get(channel_id, {}) if channel_id else {}
+        rate = opts.get("sample_rate", self._sample_rate)
+        samps = opts.get("samps_per_chan", self._samps_per_chan)
+        task.timing.cfg_samp_clk_timing(
+            rate=rate,
+            sample_mode=AcquisitionType.FINITE,
+            samps_per_chan=samps,
+        )
+
+    def _read_hw_timed(self, task, num_channels=1):
+        """Read from a finite-acquisition task, return the last sample(s).
+
+        For a single-channel task, returns a single float.
+        For a multi-channel task, returns a list of floats (one per channel).
+        After reading, stops the task so it can be re-armed on the next call.
+        """
+        samps = task.timing.samp_quant_samp_per_chan
+        data = task.read(number_of_samples_per_channel=samps)
+        task.stop()  # re-arm for next finite acquisition
+
+        if num_channels == 1:
+            # Single channel: data is a list of floats [sample0, sample1, ...]
+            if isinstance(data, list):
+                return data[-1]
+            return data
+        else:
+            # Multi-channel: data is list-of-lists [[ch0_s0, ch0_s1], [ch1_s0, ch1_s1], ...]
+            return [ch_data[-1] if isinstance(ch_data, list) else ch_data for ch_data in data]
 
     def _get_or_create_task(self, channel_id):
         """Return an existing task or create a new one for *channel_id*."""
@@ -160,7 +221,9 @@ class NiCdaqDriver(DriverBase):
                 )
                 task.ai_channels.add_ai_rtd_chan(
                     phys,
-                    rtd_type=opts.get("rtd_type", _RTD_TYPE_DEFAULT),
+                    rtd_type=_RTD_TYPE_MAP.get(
+                        str(opts.get("rtd_type", "PT_3750")).upper(), _RTD_TYPE_DEFAULT
+                    ),
                     resistance_config=wire,
                     current_excit_source=ExcitationSource.INTERNAL,
                     current_excit_val=opts.get("excitation_current", 0.001),
@@ -176,6 +239,11 @@ class NiCdaqDriver(DriverBase):
             else:
                 task.close()
                 raise ValueError(f"Unknown channel kind '{kind}'")
+
+            # Configure hardware-timed sampling for all AI tasks
+            if kind != "ao":
+                self._configure_hw_timing(task, channel_id)
+
         except nidaqmx.DaqError as exc:
             task.close()
             raise ConnectionError(
@@ -245,10 +313,47 @@ class NiCdaqDriver(DriverBase):
             except Exception:
                 log.info("Matched module %s", d.name)
 
+        # Build set of available physical channels for validation
+        self._available_channels = set()
+        for d in matched:
+            try:
+                for c in d.ai_physical_channels:
+                    self._available_channels.add(c.name)
+                for c in d.ao_physical_channels:
+                    self._available_channels.add(c.name)
+            except Exception:
+                pass
+
         log.info(
-            "Connected to NI cDAQ chassis '%s' — %d module(s) found",
-            self._device, len(matched),
+            "Connected to NI cDAQ chassis '%s' — %d module(s) found, "
+            "%d physical channels available",
+            self._device, len(matched), len(self._available_channels),
         )
+
+    def validate_channel_id(self, channel_id):
+        """Validate a channel ID. Returns (ok, error_message).
+
+        Checks format against _CH_RE, then checks the physical channel
+        exists in the hardware (if enumerate has run).
+        """
+        m = _CH_RE.match(channel_id)
+        if not m:
+            return False, (
+                f"Invalid NI cDAQ channel ID '{channel_id}'. "
+                "Expected format: Mod<slot>/<ai|tc|rtd|ao|ai_poly|ai_custom><index> "
+                "(e.g. Mod1/ai0, Mod2/tc3, Mod3/rtd0, Mod4/ao1)"
+            )
+        module, kind, index = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        # Check against discovered hardware channels (if available)
+        if self._available_channels:
+            phys = self._physical_channel(module, kind, index)
+            if phys not in self._available_channels:
+                return False, (
+                    f"Channel '{channel_id}' maps to physical channel '{phys}' "
+                    f"which was not found on the hardware. "
+                    f"Available: {sorted(self._available_channels)}"
+                )
+        return True, ""
 
     def read_channels(self, channel_ids):
         """Batch-read multiple input channels in a single call.
@@ -319,13 +424,21 @@ class NiCdaqDriver(DriverBase):
                             )
                             task.ai_channels.add_ai_rtd_chan(
                                 phys,
-                                rtd_type=opts.get("rtd_type", _RTD_TYPE_DEFAULT),
+                                rtd_type=_RTD_TYPE_MAP.get(
+                                    str(opts.get("rtd_type", "PT_3750")).upper(),
+                                    _RTD_TYPE_DEFAULT,
+                                ),
                                 resistance_config=wire,
                                 current_excit_source=ExcitationSource.INTERNAL,
                                 current_excit_val=opts.get("excitation_current", 0.001),
                                 r_0=opts.get("r0", _RTD_RESISTANCE_DEFAULT),
                                 units=TemperatureUnits.DEG_C,
                             )
+                    # Hardware-timed sampling for the batch task.
+                    # Use the first channel's opts for rate, or the global default.
+                    first_cid = members[0][1]
+                    self._configure_hw_timing(task, first_cid)
+
                 except Exception as exc:
                     task.close()
                     log.warning("Batch task creation failed for Mod%d/%s: %s", module, kind, exc)
@@ -340,8 +453,8 @@ class NiCdaqDriver(DriverBase):
             # Read all channels in a single call
             try:
                 task = self._tasks[task_key]
-                values = task.read()
-                # Single-channel task returns a scalar, multi-channel returns a list
+                values = self._read_hw_timed(task, num_channels=len(members))
+                # Single-channel batch returns a scalar via _read_hw_timed
                 if not isinstance(values, list):
                     values = [values]
                 for (list_idx, cid, _), raw in zip(members, values):
@@ -387,7 +500,7 @@ class NiCdaqDriver(DriverBase):
         """
         try:
             task = self._get_or_create_task(channel_id)
-            value = task.read()
+            value = self._read_hw_timed(task, num_channels=1)
         except nidaqmx.DaqError as exc:
             log.warning(
                 "DAQ read error on %s (phys=%s): %s",

@@ -11,10 +11,116 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 
 from config_loader import load_config
 from driver_base import DRIVER_REGISTRY
+
+
+# ── Channel ID format validators (one per driver type) ────────────────
+# Each returns (ok, error_msg).  These run at config-parse time so they
+# only check *format* — no hardware access.
+
+_NI_CDAQ_CH_RE = re.compile(
+    r"^Mod(\d+)/(ai|tc|rtd|ao|ai_poly|ai_custom)(\d+)$", re.IGNORECASE
+)
+
+_ALICAT_VALID = {"P", "T", "VOL_FLOW", "MASS_FLOW", "SETPOINT", "GAS"}
+
+_YOKOGAWA_SIGMA_RE = re.compile(r"^SIGMA_(\w+)$", re.IGNORECASE)
+_YOKOGAWA_ELEM_RE = re.compile(r"^(\w+?)(\d)$", re.IGNORECASE)
+_YOKOGAWA_ELEM_FUNCS = {
+    "U", "I", "P", "S", "Q", "LAMBDA", "PHI",
+    "FU", "FI", "UPP", "IPP", "UPPK", "IPPK",
+}
+_YOKOGAWA_SIGMA_FUNCS = {"P", "S", "Q", "LAMBDA"}
+
+# Build Rigol pattern from the same measurement keys the driver uses
+_RIGOL_MEAS_KEYS = {
+    "VPP", "VMAX", "VMIN", "VAVG", "VRMS", "VAMP", "VTOP", "VBASE",
+    "FREQ", "PER", "RISE", "FALL", "PWID", "NWID",
+    "PDUT", "NDUT", "OVER", "PRES",
+}
+_RIGOL_CH_RE = re.compile(
+    r"^(" + "|".join(sorted(_RIGOL_MEAS_KEYS, key=len, reverse=True)) + r")(\d)$",
+    re.IGNORECASE,
+)
+
+
+def _validate_channel_id_ni_cdaq(channel_id, direction):
+    m = _NI_CDAQ_CH_RE.match(channel_id.strip())
+    if not m:
+        return False, (
+            f"invalid format '{channel_id}'. Expected Mod<slot>/<ai|tc|rtd|ao|ai_poly|ai_custom><index> "
+            "(e.g. Mod1/ai0, Mod2/tc3, Mod3/rtd0, Mod4/ao1)"
+        )
+    slot = int(m.group(1))
+    kind = m.group(2).lower()
+    index = int(m.group(3))
+    if slot < 1 or slot > 8:
+        return False, f"slot {slot} in '{channel_id}' is out of range (expected 1-8)"
+    if index > 31:
+        return False, f"index {index} in '{channel_id}' is out of range (expected 0-31)"
+    if direction == "output" and kind != "ao":
+        return False, f"output channel '{channel_id}' uses kind '{kind}' — only 'ao' is valid for outputs"
+    if direction == "input" and kind == "ao":
+        return False, f"input channel '{channel_id}' uses kind 'ao' — 'ao' is only valid for outputs"
+    return True, ""
+
+
+def _validate_channel_id_alicat(channel_id, direction):
+    key = channel_id.strip().upper()
+    if key not in _ALICAT_VALID:
+        return False, f"'{channel_id}' not valid. Must be one of {sorted(_ALICAT_VALID)}"
+    if direction == "output" and key != "SETPOINT":
+        return False, f"only SETPOINT is writable on Alicat, got '{channel_id}'"
+    return True, ""
+
+
+def _validate_channel_id_yokogawa(channel_id, direction):
+    cid = channel_id.strip()
+    m = _YOKOGAWA_SIGMA_RE.match(cid)
+    if m:
+        func = m.group(1).upper()
+        if func not in _YOKOGAWA_SIGMA_FUNCS:
+            return False, f"invalid sigma function '{func}'. Valid: {sorted(_YOKOGAWA_SIGMA_FUNCS)}"
+        return True, ""
+    m = _YOKOGAWA_ELEM_RE.match(cid)
+    if m:
+        func = m.group(1).upper()
+        elem = m.group(2)
+        if elem not in ("1", "2", "3"):
+            return False, f"element must be 1, 2, or 3, got '{elem}'"
+        if func not in _YOKOGAWA_ELEM_FUNCS:
+            return False, f"unknown function '{func}'. Valid: {sorted(_YOKOGAWA_ELEM_FUNCS)}"
+        return True, ""
+    return False, (
+        f"cannot parse '{channel_id}'. Expected <FUNC><1|2|3> (e.g. U1, P3) "
+        "or SIGMA_<FUNC> (e.g. SIGMA_P)"
+    )
+
+
+def _validate_channel_id_rigol(channel_id, direction):
+    cid = channel_id.strip()
+    m = _RIGOL_CH_RE.match(cid)
+    if not m:
+        return False, (
+            f"invalid format '{channel_id}'. Expected <MEAS><1-8> "
+            f"(e.g. VRMS1, FREQ4). Valid measurements: {sorted(_RIGOL_MEAS_KEYS)}"
+        )
+    ch_num = int(m.group(2))
+    if ch_num < 1 or ch_num > 8:
+        return False, f"channel number must be 1-8, got {ch_num}"
+    return True, ""
+
+
+_CHANNEL_ID_VALIDATORS = {
+    "ni_cdaq": _validate_channel_id_ni_cdaq,
+    "alicat": _validate_channel_id_alicat,
+    "yokogawa_wt": _validate_channel_id_yokogawa,
+    "rigol_dho": _validate_channel_id_rigol,
+}
 
 
 def validate(config):
@@ -83,6 +189,19 @@ def validate(config):
         slope = ch.get("slope", 1)
         if slope == 0 and direction == "output":
             warnings.append(f"Channels > {name}: Slope is 0 — will cause division by zero on output scaling")
+        # Channel ID format validation (driver-specific)
+        channel_id = ch.get("channel_id", "")
+        if not channel_id and inst_name and inst_name in instruments:
+            driver_type = instruments[inst_name].get("type", "simulated")
+            if driver_type != "simulated":
+                warnings.append(f"Channels > {name}: no Channel ID for non-simulated driver '{driver_type}'")
+        if channel_id and inst_name and inst_name in instruments:
+            driver_type = instruments[inst_name].get("type", "simulated")
+            validator = _CHANNEL_ID_VALIDATORS.get(driver_type)
+            if validator:
+                ok, msg = validator(channel_id, direction)
+                if not ok:
+                    errors.append(f"Channels > {name}: Channel ID {msg}")
 
     # ── Control Loops ────────────────────────────────────────────────
     for name, loop in control_loops.items():
@@ -162,7 +281,7 @@ def validate(config):
         if ch not in channels:
             errors.append(f"Interlocks > {name}: Channel '{ch}' does not exist in Channels")
         elif ch not in enabled_channels:
-            warnings.append(f"Interlocks > {name}: Channel '{ch}' is disabled")
+            errors.append(f"Interlocks > {name}: Channel '{ch}' is disabled — interlock will never trigger")
         # Condition
         cond = il.get("condition", "")
         if cond not in valid_conditions:
@@ -292,6 +411,15 @@ def validate(config):
         if val and str(val).strip():
             if str(val).strip() not in channels:
                 errors.append(f"Settings > {key}: channel '{val}' does not exist in Channels")
+
+    # Scatter plots require both X and Y; warn if only one is set
+    for n in ["", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9"]:
+        sx = str(settings.get(f"Scatter X Channel{n}", "")).strip()
+        sy = str(settings.get(f"Scatter Y Channel{n}", "")).strip()
+        if bool(sx) != bool(sy):
+            which = f"Scatter X Channel{n}" if sx else f"Scatter Y Channel{n}"
+            missing = f"Scatter Y Channel{n}" if sx else f"Scatter X Channel{n}"
+            warnings.append(f"Settings > {which} is set but {missing} is empty — scatter plot{n} will not be created")
 
     return errors, warnings
 

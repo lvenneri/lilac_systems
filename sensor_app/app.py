@@ -168,6 +168,14 @@ def get_config():
             })
     frontend_config["step_series"] = config.get("step_series", [])
     frontend_config["step_columns"] = config.get("step_columns", [])
+    # Instrument metadata for status panel
+    frontend_config["instruments"] = {}
+    for name, inst_cfg in config.get("instruments", {}).items():
+        if inst_cfg.get("enabled", True):
+            frontend_config["instruments"][name] = {
+                "type": inst_cfg.get("type", "simulated"),
+                "address": inst_cfg.get("address", ""),
+            }
     return jsonify(frontend_config)
 
 

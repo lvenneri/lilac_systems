@@ -366,6 +366,16 @@ body.interlock-alarm #site_title::before {
   background-color: transparent;
 }
 
+.custom-table th,
+.custom-table td {
+  border-color: var(--border-light);
+}
+
+.custom-table .table-separator td {
+  padding: 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
 /* ===== Collapsible panels ===== */
 .card-body.panel-body-collapsible {
   padding: 0;
@@ -386,24 +396,40 @@ body.interlock-alarm #site_title::before {
   opacity: 0;
 }
 
-/* ===== Dashboard columns ===== */
+/* ===== Dashboard columns (CSS Grid) ===== */
 .dashboard-columns {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  /* grid-template-columns set by JS, e.g. "33% 6px 34% 6px 33%" */
+  gap: 0;
+  min-height: 200px;
 }
 
 .dashboard-col {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  min-width: 0;
+  min-width: 120px;
+  overflow: hidden;
+}
+
+.col-divider {
+  width: 6px;
+  cursor: col-resize;
+  background: var(--bg);
+  transition: background 0.15s;
+}
+
+.col-divider:hover,
+.col-divider.active {
+  background: var(--border-light);
 }
 
 @media (max-width: 991px) {
   .dashboard-columns {
+    display: flex;
     flex-direction: column;
   }
+  .col-divider { display: none; }
 }
 
 /* ===== Buttons ===== */
@@ -907,4 +933,73 @@ body.dark-mode label {
   flex-shrink: 0;
   min-width: 100px;
   text-align: right;
+}
+
+/* --- Driver Status panel --- */
+.driver-status-empty {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.driver-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-light);
+  gap: 8px;
+}
+.driver-status-row:last-child {
+  border-bottom: none;
+}
+.driver-status-name {
+  font-size: 0.8rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.driver-status-type {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.driver-status-indicator {
+  font-size: 0.7rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  min-width: 70px;
+  text-align: right;
+}
+.driver-status-ok {
+  color: var(--indicator-match);
+}
+.driver-status-degraded {
+  color: orange;
+}
+.driver-status-reconnecting {
+  color: orange;
+  animation: warning-pulse-fast 0.5s ease-in-out infinite;
+}
+.driver-status-disconnected {
+  color: var(--indicator-mismatch);
+  animation: warning-pulse-fast 0.33s ease-in-out infinite;
+}
+.driver-status-detail {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.driver-row-warn {
+  background: rgba(255, 165, 0, 0.08);
+}
+.driver-row-error {
+  background: rgba(255, 0, 0, 0.08);
 }

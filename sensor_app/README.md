@@ -68,7 +68,7 @@ One row per I/O signal. Links to an instrument.
 | Channel ID | Hardware channel (e.g. `ai0`, `ch1`) |
 | Channel Name | Unique key used everywhere else (e.g. `reactor_temp`) |
 | Direction | `input` (sensor) or `output` (actuator) |
-| Signal Type | Informational label (`voltage`, `current`, `temperature`, `string`, etc.). Not used by the engine — purely for documentation. |
+| Signal Type | Sensor subtype for hardware configuration. For NI cDAQ TC channels: `tc_K`, `tc_T`, `tc_J`, etc. For RTD channels: `rtd_PT_3851`, `rtd_PT_3750_4wire`, etc. See [NI cDAQ Setup](#ni-cdaq-setup). For other drivers this is informational only. |
 | Units | Display units (e.g. `degC`, `%`, `hPa`) |
 | Slope / Offset | Linear calibration: `value = raw * slope + offset` |
 | Min / Max Value | Expected range (used for axis scaling) |
@@ -234,16 +234,229 @@ def _compute_derived(self, flat_sensors):
 
 The method has access to all scaled input channels, output channel readbacks, and PID virtual channels (`pid.<loop>.setpoint`, `.pv`, `.output`, `.error`). Use `flat_sensors.get()` to safely handle missing channels.
 
-### NI cDAQ Special Channel Types
+### NI cDAQ Setup
 
-For voltage inputs on an NI cDAQ that need conversion beyond simple slope/offset, two additional channel kinds are available in the Channel ID field:
+The NI cDAQ driver (`ni_cdaq`) supports the cDAQ-9177 chassis with mixed I/O modules. One Instruments row covers the entire chassis — individual cards are addressed by the slot number in the Channel ID.
 
-| Channel ID format | Description |
-|-------------------|-------------|
-| `Mod{slot}/ai_poly{n}` | Polynomial conversion. Provide `"coefficients": [c0, c1, c2, ...]` in the instrument's `channel_options`. Computes `c0 + c1*V + c2*V² + ...` |
-| `Mod{slot}/ai_custom{n}` | Hardcoded conversion. Edit `_custom_sensor_convert()` in `driver_ni_cdaq.py` with your sensor-specific formula |
+**Supported cards:**
 
-**Batch reads:** The cDAQ driver automatically groups channels by module and type into multi-channel DAQmx tasks. Instead of N individual reads (each with USB round-trip overhead), all channels on the same module are read in a single call. This significantly reduces aggregate throughput load when a module has many channels. Falls back to per-channel reads if the batch task fails.
+| Card | Type | Channels |
+|------|------|----------|
+| NI 9201 | Analog voltage input | 8-ch ±10 V |
+| NI 9202 | Analog voltage input | 16-ch ±10 V |
+| NI 9214 | Thermocouple input | 16-ch (delta-sigma) |
+| NI 9216 | RTD input | 8-ch |
+| NI 9264 | Analog voltage output | 16-ch ±10 V |
+
+#### Instruments Sheet
+
+One row for the chassis. The Address must match the NI-DAQmx device name shown in NI MAX.
+
+| Instrument Name | Type | Address / Device | Poll Rate (s) |
+|----------------|------|-----------------|---------------|
+| cDAQ_Chassis | ni_cdaq | cDAQ1 | 0.1 |
+
+#### Channel ID Format
+
+The Channel ID encodes the slot number and channel type:
+
+| Format | Description | Used with |
+|--------|-------------|-----------|
+| `Mod{slot}/ai{n}` | Analog voltage input | NI 9201, NI 9202 |
+| `Mod{slot}/tc{n}` | Thermocouple input | NI 9214 |
+| `Mod{slot}/rtd{n}` | RTD input | NI 9216 |
+| `Mod{slot}/ao{n}` | Analog voltage output | NI 9264 |
+| `Mod{slot}/ai_poly{n}` | Voltage input with polynomial conversion | NI 9201, NI 9202 |
+| `Mod{slot}/ai_custom{n}` | Voltage input with hardcoded conversion | NI 9201, NI 9202 |
+
+The slot number matches the physical position in the chassis (1-indexed as shown in NI MAX, e.g. `cDAQ1Mod1`, `cDAQ1Mod2`).
+
+#### Signal Type for TC and RTD Configuration
+
+Use the Channels sheet **Signal Type** column to configure thermocouple and RTD sensor types.
+
+**Thermocouple types:** `tc_K`, `tc_T`, `tc_J`, `tc_E`, `tc_N`, `tc_R`, `tc_S`, `tc_B`
+
+**RTD types:** `rtd_PT_3750`, `rtd_PT_3851`, `rtd_PT_3911`, `rtd_PT_3916`, `rtd_PT_3920`, `rtd_PT_3928`
+
+**RTD wire configuration** (append to RTD type): `_2wire`, `_3wire`, `_4wire`
+
+If Signal Type is blank, defaults are Type K for thermocouples and PT_3750 3-wire for RTDs.
+
+#### Full Example
+
+**Instruments:**
+
+| Instrument Name | Type | Address / Device | Poll Rate (s) | Enabled |
+|----------------|------|-----------------|---------------|---------|
+| cDAQ_Chassis | ni_cdaq | cDAQ1 | 0.1 | Yes |
+
+**Channels:**
+
+| Channel Name | Instrument | Channel ID | Direction | Signal Type | Units |
+|-------------|-----------|------------|-----------|-------------|-------|
+| Voltage_1 | cDAQ_Chassis | Mod1/ai0 | input | | V |
+| Voltage_2 | cDAQ_Chassis | Mod1/ai1 | input | | V |
+| TC_Inlet | cDAQ_Chassis | Mod2/tc0 | input | tc_K | degC |
+| TC_Outlet | cDAQ_Chassis | Mod2/tc1 | input | tc_T | degC |
+| TC_Exhaust | cDAQ_Chassis | Mod2/tc2 | input | tc_J | degC |
+| RTD_Bath | cDAQ_Chassis | Mod3/rtd0 | input | rtd_PT_3851_4wire | degC |
+| RTD_Ambient | cDAQ_Chassis | Mod3/rtd1 | input | rtd_PT_3750 | degC |
+| Heater_Out | cDAQ_Chassis | Mod4/ao0 | output | | V |
+
+#### Polynomial and Custom Conversions
+
+For voltage inputs that need conversion beyond slope/offset:
+
+- **`ai_poly`** — Polynomial: `result = c0 + c1*V + c2*V² + ...`. Provide coefficients in the Signal Type column as `poly_c0,c1,c2,...`. Example: `poly_0,-14.3,2.05` computes `-14.3*V + 2.05*V²`.
+- **`ai_custom`** — Hardcoded conversion function. Edit `_custom_sensor_convert()` in `driver_ni_cdaq.py`.
+
+Example polynomial channel:
+
+| Channel Name | Instrument | Channel ID | Signal Type | Units |
+|-------------|-----------|------------|-------------|-------|
+| Pressure_1 | cDAQ_Chassis | Mod1/ai_poly0 | poly_0,100 | PSI |
+
+#### Hardware-Timed Sampling
+
+All analog input tasks use finite hardware-timed sampling (not on-demand reads) for compatibility with delta-sigma modules like the NI 9214. The default sample rate is 10 Hz, safe for all supported cards. SAR cards (9201, 9202) can run much faster — override via `sample_rate` in the instrument config if needed.
+
+#### Batch Reads
+
+The driver automatically groups channels by module and type into multi-channel DAQmx tasks. Instead of N individual USB round-trips, all channels on the same module are read in a single call. Falls back to per-channel reads on error.
+
+### Yokogawa WT Setup
+
+The Yokogawa WT driver (`yokogawa_wt`) communicates with WT333E power analyzers over GPIB via PyVISA. One Instruments row covers a single analyzer — each measurement element and function is addressed by Channel ID.
+
+**Channel ID format:** `{function}{element}` where element is `1`, `2`, `3`, or use `SIGMA_{function}` for the sum across elements.
+
+| Function | Description | Units |
+|----------|-------------|-------|
+| `U` | RMS voltage | V |
+| `I` | RMS current | A |
+| `P` | Active power | W |
+| `S` | Apparent power | VA |
+| `Q` | Reactive power | var |
+| `LAMBDA` | Power factor | — |
+| `FU` / `FI` | Voltage / current frequency | Hz |
+| `PHI` | Phase angle | deg |
+| `UPP` / `IPP` | Voltage / current peak-to-peak | V / A |
+
+Sigma channels: `SIGMA_P` (total active power), `SIGMA_S`, `SIGMA_Q`, `SIGMA_LAMBDA`.
+
+#### Example
+
+**Instruments:**
+
+| Instrument Name | Type | Address / Device | Poll Rate (s) | Timeout (s) | Enabled |
+|----------------|------|-----------------|---------------|-------------|---------|
+| WT333E | yokogawa_wt | GPIB0::1::INSTR | 1 | 5 | Yes |
+
+**Channels:**
+
+| Channel Name | Instrument | Channel ID | Direction | Units |
+|-------------|-----------|------------|-----------|-------|
+| Line_Voltage | WT333E | U1 | input | V |
+| Line_Current | WT333E | I1 | input | A |
+| Input_Power | WT333E | P1 | input | W |
+| Power_Factor | WT333E | LAMBDA1 | input | — |
+| Total_Power | WT333E | SIGMA_P | input | W |
+| Line_Freq | WT333E | FU1 | input | Hz |
+
+**Testing the driver standalone:**
+
+```bash
+python driver_yokogawa_wt.py GPIB0::1::INSTR
+```
+
+### Alicat Setup
+
+The Alicat driver (`alicat`) communicates with mass flow meters, mass flow controllers, and pressure controllers over USB serial. Each physical Alicat unit needs its own Instruments row — use the **Query Command** field for the unit ID character (printed on the front panel, default `A`).
+
+**Channel IDs:**
+
+| Channel ID | Description | Units | Writable |
+|-----------|-------------|-------|----------|
+| `P` | Absolute pressure | varies | No |
+| `T` | Gas temperature | varies | No |
+| `VOL_FLOW` | Volumetric flow rate | varies | No |
+| `MASS_FLOW` | Mass flow rate | varies | No |
+| `SETPOINT` | Setpoint (controllers only) | varies | Yes |
+| `GAS` | Gas index number | — | No |
+
+**Baud rate:** Defaults to 19200. To override, put the baud rate in the **Notes** column (e.g. `9600`).
+
+#### Example — Two Alicats on One USB Hub
+
+**Instruments:**
+
+| Instrument Name | Type | Address / Device | Query Command | Poll Rate (s) | Timeout (s) | Enabled |
+|----------------|------|-----------------|---------------|---------------|-------------|---------|
+| Flow_Controller | alicat | /dev/tty.usbserial-0001 | A | 0.2 | 2 | Yes |
+| Pressure_Controller | alicat | /dev/tty.usbserial-0002 | A | 0.2 | 2 | Yes |
+
+**Channels:**
+
+| Channel Name | Instrument | Channel ID | Direction | Units |
+|-------------|-----------|------------|-----------|-------|
+| Supply_Pressure | Flow_Controller | P | input | PSIA |
+| Gas_Temp | Flow_Controller | T | input | degC |
+| Vol_Flow | Flow_Controller | VOL_FLOW | input | LPM |
+| Mass_Flow | Flow_Controller | MASS_FLOW | input | SLPM |
+| Flow_Setpoint | Flow_Controller | SETPOINT | output | SLPM |
+| Back_Pressure | Pressure_Controller | P | input | PSIA |
+| Press_Setpoint | Pressure_Controller | SETPOINT | output | PSIA |
+
+**Testing the driver standalone:**
+
+```bash
+python driver_alicat.py /dev/tty.usbserial-0001 A
+```
+
+### Rigol DHO Setup
+
+The Rigol DHO driver (`rigol_dho`) communicates with DHO5000-series oscilloscopes over USB-TMC or LAN via PyVISA.
+
+**Channel ID format:** `{measurement}{channel_number}` where channel number is `1`–`8`.
+
+| Measurement | Description | Units |
+|-------------|-------------|-------|
+| `VRMS` | RMS voltage | V |
+| `VPP` | Peak-to-peak voltage | V |
+| `VMAX` / `VMIN` | Max / min voltage | V |
+| `VAVG` | Average voltage | V |
+| `VAMP` | Amplitude (Vtop − Vbase) | V |
+| `VTOP` / `VBASE` | Top / base flat voltage | V |
+| `FREQ` | Frequency | Hz |
+| `PER` | Period | s |
+| `RISE` / `FALL` | Rise / fall time | s |
+| `PWID` / `NWID` | Positive / negative pulse width | s |
+| `PDUT` / `NDUT` | Positive / negative duty cycle | % |
+| `OVER` / `PRES` | Overshoot / preshoot | % |
+
+#### Example
+
+**Instruments:**
+
+| Instrument Name | Type | Address / Device | Poll Rate (s) | Timeout (s) | Enabled |
+|----------------|------|-----------------|---------------|-------------|---------|
+| Scope | rigol_dho | USB0::0x1AB1::0x0518::DS5A243600000::INSTR | 0.5 | 5 | Yes |
+
+**Channels:**
+
+| Channel Name | Instrument | Channel ID | Direction | Units |
+|-------------|-----------|------------|-----------|-------|
+| Motor_Voltage | Scope | VRMS1 | input | V |
+| Motor_VPP | Scope | VPP1 | input | V |
+| Motor_Freq | Scope | FREQ1 | input | Hz |
+| Ripple_RMS | Scope | VRMS2 | input | V |
+
+**Testing the driver standalone:**
+
+```bash
+python driver_rigol_dho.py USB0::0x1AB1::0x0518::DS5A243600000::INSTR
+```
 
 ## PID Auto-Tuning
 
@@ -353,13 +566,14 @@ class MyDriver(DriverBase):
         pass
 ```
 
-Register it in `DRIVER_REGISTRY`:
+Register it in `DRIVER_REGISTRY` at the bottom of `driver_base.py`. Use a try/except so the app still works on machines without the driver's dependencies:
 
 ```python
-DRIVER_REGISTRY = {
-    "simulated": SimulatedDriver,
-    "my_hardware": MyDriver,
-}
+try:
+    from driver_my_hardware import MyDriver
+    DRIVER_REGISTRY["my_hardware"] = MyDriver
+except ImportError:
+    pass
 ```
 
 Then set `Type` to `my_hardware` in the Instruments sheet.

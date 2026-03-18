@@ -3,3 +3,4 @@ openpyxl>=3.1
 nidaqmx>=1.0
 pyvisa>=1.13
 pyserial>=3.5
+CoolProp>=6.6

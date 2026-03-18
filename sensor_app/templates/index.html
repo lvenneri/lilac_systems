@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sensor Dashboard</title>
+  <title>System</title>
   <!-- Bootstrap 5 CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- Local fonts -->
@@ -37,9 +37,14 @@
                 <button class="btn btn-outline-secondary" id="hide_all_panels">Hide All</button>
                 <button class="btn btn-outline-secondary" id="show_all_panels">Show All</button>
               </div>
+              <div class="btn-group btn-group-sm me-2" role="group" id="col_count_toggle">
+                <button class="btn btn-outline-secondary" id="col_decrease">−</button>
+                <span class="btn btn-outline-secondary disabled" id="col_count_display" style="min-width:28px; pointer-events:none;">3</span>
+                <button class="btn btn-outline-secondary" id="col_increase">+</button>
+              </div>
               <div class="btn-group btn-group-sm me-2" role="group" id="font_size_toggle">
-                <button class="btn btn-outline-secondary" id="font_decrease">−</button>
-                <button class="btn btn-outline-secondary" id="font_increase">+</button>
+                <button class="btn btn-outline-secondary" id="font_decrease">A−</button>
+                <button class="btn btn-outline-secondary" id="font_increase">A+</button>
               </div>
               <button class="btn btn-sm btn-outline-secondary me-1" id="mute_alarm_toggle" title="Mute interlock alarm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
               <button class="btn btn-sm btn-outline-secondary me-1" id="dark_mode_toggle" title="Toggle dark mode">&#9789;</button>
@@ -192,6 +197,22 @@
           </div>
         </div>
 
+        <div class="draggable-panel" draggable="true" data-panel-id="driver_status">
+          <div class="card">
+            <div class="card-header">
+              <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Driver Status</h5>
+                <button class="btn btn-sm btn-outline-secondary toggle-panel" data-target="driver_status_body">
+                  <span class="toggle-icon">&minus;</span>
+                </button>
+              </div>
+            </div>
+            <div class="card-body panel-body-collapsible" id="driver_status_body">
+              <div id="driver_status_container"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="draggable-panel" draggable="true" data-panel-id="instruments">
           <div class="card">
             <div class="card-header">
@@ -214,7 +235,7 @@
                     </tr>
                   </thead>
                   <tbody id="sensor_table_body"></tbody>
-                  <tr><th></th><th></th><th></th><th></th></tr>
+                  <tbody><tr class="table-separator"><td colspan="4"></td></tr></tbody>
                   <tbody id="command_actual"></tbody>
                 </table>
               </div>

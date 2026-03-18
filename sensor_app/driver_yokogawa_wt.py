@@ -296,3 +296,42 @@ class YokogawaWtDriver(DriverBase):
             self._rm = None
         self._cache.clear()
         log.info("Yokogawa WT driver closed.")
+
+
+if __name__ == "__main__":
+    import sys
+    import traceback
+    from datetime import datetime
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    addr = sys.argv[1] if len(sys.argv) > 1 else "GPIB0::1::INSTR"
+    config = {
+        "address": addr,
+        "timeout": 5,
+        "poll_rate": 0.2,
+    }
+
+    # U1 = Voltage element 1, I1 = Current element 1,
+    # P1 = Active power element 1, SIGMA_P = Total active power (sum of elements)
+    channels = ["U1", "I1", "P1", "SIGMA_P"]
+
+    print(f"Yokogawa WT test — address: {addr}")
+    print(f"Channels: {channels}")
+
+    drv = YokogawaWtDriver(config)
+    try:
+        drv.connect()
+        for i in range(10):
+            values = {ch: drv.read_channel(ch) for ch in channels}
+            print(f"[{datetime.now():%H:%M:%S.%f}] #{i+1:02d}  {values}")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        drv.close()

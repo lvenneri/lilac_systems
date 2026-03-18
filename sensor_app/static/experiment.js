@@ -95,12 +95,13 @@ function _playChime(type) {
       gain.connect(ctx.destination);
       osc.type = "sine";
       osc.frequency.value = freq;
-      gain.gain.value = 0;
-      gain.gain.setValueAtTime(0, now + i * 0.15);
-      gain.gain.linearRampToValueAtTime(0.12, now + i * 0.15 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.15 + 0.4);
-      osc.start(now + i * 0.15);
-      osc.stop(now + i * 0.15 + 0.4);
+      var t0 = now + i * 0.18;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.06);
+      gain.gain.setValueAtTime(0.12, t0 + 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
+      osc.start(t0);
+      osc.stop(t0 + 0.5);
     });
   } else if (type === "hold_end") {
     // Three-note ascending ta-da (C5 → E5 → G5)
@@ -111,12 +112,13 @@ function _playChime(type) {
       gain.connect(ctx.destination);
       osc.type = "sine";
       osc.frequency.value = freq;
-      gain.gain.value = 0;
-      gain.gain.setValueAtTime(0, now + i * 0.12);
-      gain.gain.linearRampToValueAtTime(0.12, now + i * 0.12 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.5);
-      osc.start(now + i * 0.12);
-      osc.stop(now + i * 0.12 + 0.5);
+      var t0 = now + i * 0.15;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.06);
+      gain.gain.setValueAtTime(0.12, t0 + 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+      osc.start(t0);
+      osc.stop(t0 + 0.55);
     });
   }
 }
@@ -140,6 +142,7 @@ function loadExperimentConfig() {
       buildOutputChannelControls(cfg);
       initSettingsFromConfig(cfg);
       buildInterlockList();
+      buildDriverStatusPanel(cfg.instruments || {});
     })
     .catch(err => console.warn("No experiment config:", err));
 }
@@ -1118,6 +1121,116 @@ function updateStepSeriesStatus(status) {
     ui.timerFill.classList.remove("settling");
   }
 
+}
+
+// ---------------------------------------------------------------------------
+// Driver Status panel
+// ---------------------------------------------------------------------------
+
+let driverStatusDefs = {};  // instrument_name -> {type, address}
+let driverStatusBuilt = false;
+
+var _driverIdMap = {};  // original name -> unique safe DOM id
+function _driverDomId(name) {
+  if (_driverIdMap[name]) return _driverIdMap[name];
+  let base = name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  let safe = base;
+  let n = 2;
+  const used = new Set(Object.values(_driverIdMap));
+  while (used.has(safe)) { safe = base + "_" + n; n++; }
+  _driverIdMap[name] = safe;
+  return safe;
+}
+
+function buildDriverStatusPanel(instruments) {
+  const container = document.getElementById("driver_status_container");
+  if (!container) return;
+  driverStatusDefs = instruments;
+  const names = Object.keys(instruments);
+  if (names.length === 0) {
+    container.innerHTML = '<div class="driver-status-empty">No instruments configured</div>';
+    return;
+  }
+  container.innerHTML = "";
+  names.forEach(name => {
+    const inst = instruments[name];
+    const safeId = _driverDomId(name);
+    const row = document.createElement("div");
+    row.className = "driver-status-row";
+    row.id = "driver_status_" + safeId;
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "driver-status-name";
+    nameEl.textContent = name;
+
+    const typeEl = document.createElement("span");
+    typeEl.className = "driver-status-type";
+    typeEl.textContent = inst.type;
+
+    const indicator = document.createElement("span");
+    indicator.className = "driver-status-indicator driver-status-ok";
+    indicator.id = "driver_indicator_" + safeId;
+    indicator.textContent = "OK";
+
+    const detail = document.createElement("span");
+    detail.className = "driver-status-detail";
+    detail.id = "driver_detail_" + safeId;
+    detail.textContent = "";
+
+    row.appendChild(nameEl);
+    row.appendChild(typeEl);
+    row.appendChild(indicator);
+    row.appendChild(detail);
+    container.appendChild(row);
+  });
+  driverStatusBuilt = true;
+}
+
+function updateDriverStatus(statusMap) {
+  if (!driverStatusBuilt || !statusMap) return;
+  Object.keys(driverStatusDefs).forEach(name => {
+    const s = statusMap[name];
+    const safeId = _driverDomId(name);
+    const indicator = document.getElementById("driver_indicator_" + safeId);
+    const detail = document.getElementById("driver_detail_" + safeId);
+    const row = document.getElementById("driver_status_" + safeId);
+    if (!indicator) return;
+
+    const status = s ? s.status : "ok";
+    // Update indicator text and class
+    indicator.className = "driver-status-indicator";
+    if (status === "ok") {
+      indicator.textContent = "OK";
+      indicator.classList.add("driver-status-ok");
+      if (row) row.classList.remove("driver-row-warn", "driver-row-error");
+    } else if (status === "degraded") {
+      indicator.textContent = "DEGRADED";
+      indicator.classList.add("driver-status-degraded");
+      if (row) { row.classList.add("driver-row-warn"); row.classList.remove("driver-row-error"); }
+    } else if (status === "reconnecting") {
+      indicator.textContent = "RECONNECTING";
+      indicator.classList.add("driver-status-reconnecting");
+      if (row) { row.classList.add("driver-row-warn"); row.classList.remove("driver-row-error"); }
+    } else if (status === "disconnected") {
+      indicator.textContent = "DISCONNECTED";
+      indicator.classList.add("driver-status-disconnected");
+      if (row) { row.classList.remove("driver-row-warn"); row.classList.add("driver-row-error"); }
+    }
+
+    // Detail text
+    if (detail) {
+      if (s && s.last_error) {
+        detail.textContent = s.last_error;
+        detail.title = s.last_error;
+      } else if (s && s.reconnect_count > 0 && status === "ok") {
+        detail.textContent = "reconnected (#" + s.reconnect_count + ")";
+        detail.title = "";
+      } else {
+        detail.textContent = "";
+        detail.title = "";
+      }
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

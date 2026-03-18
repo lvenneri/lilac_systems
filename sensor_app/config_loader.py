@@ -23,6 +23,12 @@ def _to_number(val):
         return val
 
 
+def _to_float(val, default=0):
+    """Convert to float, returning *default* if not numeric."""
+    n = _to_number(val)
+    return n if isinstance(n, (int, float)) else default
+
+
 def _sheet_rows(wb, sheet_name):
     """Yield (header_list, data_rows) for a sheet. Row 1 = description (skip),
     Row 2 = headers, Row 3+ = data."""
@@ -64,8 +70,8 @@ def load_config(filepath):
             "type": str(d.get("Type", "simulated")).strip().lower(),
             "address": str(d.get("Address / Device", "")) if d.get("Address / Device") else "",
             "query_command": str(d.get("Query Command", "")) if d.get("Query Command") else "",
-            "poll_rate": _to_number(d.get("Poll Rate (s)")) or 0.1,
-            "timeout": _to_number(d.get("Timeout (s)")) or 5,
+            "poll_rate": _to_float(d.get("Poll Rate (s)"), 0.1),
+            "timeout": _to_float(d.get("Timeout (s)"), 5),
             "enabled": _parse_bool(d.get("Enabled", True)),
             "notes": str(d.get("Notes", "")) if d.get("Notes") else "",
         }
@@ -86,8 +92,8 @@ def load_config(filepath):
             "direction": str(d.get("Direction", "input")).strip().lower(),
             "signal_type": str(d.get("Signal Type", "")).strip().lower(),
             "units": str(d.get("Units", "")) if d.get("Units") else "",
-            "slope": _to_number(d.get("Slope")) if d.get("Slope") is not None else 1,
-            "offset": _to_number(d.get("Offset")) if d.get("Offset") is not None else 0,
+            "slope": _to_float(d.get("Slope"), 1),
+            "offset": _to_float(d.get("Offset"), 0),
             "min": _to_number(d.get("Min Value")) if d.get("Min Value") is not None else 0,
             "max": _to_number(d.get("Max Value")) if d.get("Max Value") is not None else 100,
             "enabled": _parse_bool(d.get("Enabled", True)),
@@ -95,6 +101,50 @@ def load_config(filepath):
             "notes": str(d.get("Notes", "")) if d.get("Notes") else "",
         }
     config["channels"] = channels
+
+    # --- Build channel_options from Signal Type for NI cDAQ drivers ---
+    # Signal Type values: "tc_K", "tc_T", "rtd_PT_3851", "rtd_PT_3851_4wire",
+    #                     "poly_c0,c1,c2,...", etc.
+    for ch_name, ch_cfg in channels.items():
+        sig = ch_cfg.get("signal_type", "")
+        if not sig:
+            continue
+        inst_name = ch_cfg.get("instrument", "")
+        channel_id = ch_cfg.get("channel_id", "")
+        if not inst_name or not channel_id or inst_name not in instruments:
+            continue
+        opts = {}
+        sig_upper = sig.upper().replace(" ", "_")
+        if sig_upper.startswith("TC_"):
+            # e.g. "tc_K", "tc_T", "tc_J"
+            opts["tc_type"] = sig_upper[3:]
+        elif sig_upper.startswith("RTD_"):
+            # e.g. "rtd_PT_3851", "rtd_PT_3851_4wire", "rtd_PT_3750_2wire"
+            parts = sig_upper[4:]  # "PT_3851_4WIRE"
+            # Check for trailing wire config
+            for wire in ("_2WIRE", "_3WIRE", "_4WIRE"):
+                if parts.endswith(wire):
+                    opts["rtd_wires"] = wire[-5]  # "2", "3", or "4"
+                    parts = parts[: -len(wire)]
+                    break
+            if parts:
+                opts["rtd_type"] = parts
+        elif sig.lower().startswith("poly_"):
+            # e.g. "poly_0.5,1.2,0.003" -> coefficients [0.5, 1.2, 0.003]
+            coeff_str = sig[5:]  # strip "poly_"
+            try:
+                coeffs = [float(c.strip()) for c in coeff_str.split(",")]
+                opts["coefficients"] = coeffs
+            except ValueError:
+                pass
+        if opts:
+            inst = instruments[inst_name]
+            if "channel_options" not in inst:
+                inst["channel_options"] = {}
+            inst["channel_options"][channel_id] = {
+                **inst.get("channel_options", {}).get(channel_id, {}),
+                **opts,
+            }
 
     # --- Control Loops ---
     headers, data = _sheet_rows(wb, "Control Loops")

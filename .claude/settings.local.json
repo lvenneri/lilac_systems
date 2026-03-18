@@ -20,7 +20,16 @@
       "Bash(grep -l \"class.*Driver\" /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/driver_*.py)",
       "Bash(python -c \"import experiment_engine; print\\(''engine OK''\\)\")",
       "Bash(python -c \"import driver_base; print\\(''driver_base OK''\\)\")",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(./venv/bin/pip list:*)",
+      "Bash(./venv/bin/python -m pip list)",
+      "Bash(./venv/bin/python -m pip install -r requirements.txt)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(grep -n \"def read_channel\\\\|def write_channel\\\\|def connect\\\\|def close\" /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/driver_base.py /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/driver_*.py)",
+      "Bash(python -c \"from sensor_app.validate_config import _CHANNEL_ID_VALIDATORS; print\\(''Validators loaded:'', list\\(_CHANNEL_ID_VALIDATORS.keys\\(\\)\\)\\)\")",
+      "Bash(node -c /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/static/experiment.js)",
+      "Bash(node -c /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/static/dashboard.js)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''experiment_engine.py'', doraise=True\\)\")"
     ]
   }
 }

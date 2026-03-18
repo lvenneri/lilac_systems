@@ -291,3 +291,42 @@ class RigolDhoDriver(DriverBase):
         self._cache.clear()
         self._enabled_meas.clear()
         log.info("Rigol DHO driver closed.")
+
+
+if __name__ == "__main__":
+    import sys
+    import traceback
+    from datetime import datetime
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    addr = sys.argv[1] if len(sys.argv) > 1 else "USB0::0x1AB1::0x0518::DS5A000000000::INSTR"
+    config = {
+        "address": addr,
+        "timeout": 5,
+        "poll_rate": 0.2,
+    }
+
+    # VRMS1 = RMS voltage CH1, VPP1 = Peak-to-peak voltage CH1,
+    # FREQ1 = Frequency CH1, VRMS2 = RMS voltage CH2
+    channels = ["VRMS1", "VPP1", "FREQ1", "VRMS2"]
+
+    print(f"Rigol DHO test — address: {addr}")
+    print(f"Channels: {channels}")
+
+    drv = RigolDhoDriver(config)
+    try:
+        drv.connect()
+        for i in range(10):
+            values = {ch: drv.read_channel(ch) for ch in channels}
+            print(f"[{datetime.now():%H:%M:%S.%f}] #{i+1:02d}  {values}")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        drv.close()

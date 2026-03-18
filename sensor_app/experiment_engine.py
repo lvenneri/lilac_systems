@@ -3,9 +3,13 @@
 import collections
 import csv
 import json
+import logging
+import math
 import os
 import threading
 import time
+
+log = logging.getLogger(__name__)
 
 from pid_controller import PIDController
 from pid_autotune import StepResponseTuner
@@ -61,6 +65,11 @@ class ExperimentEngine:
         self._last_instrument_read = {}    # instrument_name -> last read timestamp
         self._cached_readings = {}         # ch_name -> last known scaled value
 
+        # Instrument health tracking for reconnection
+        self._instrument_status = {}       # inst_name -> {status, consecutive_failures, last_error, ...}
+        self._RECONNECT_THRESHOLD = 10     # consecutive all-NaN cycles before reconnect attempt
+        self._RECONNECT_COOLDOWN = 30.0    # seconds between reconnect attempts
+
         # Step series state
         self.step_series = config.get("step_series", [])
         self.step_columns = config.get("step_columns", [])
@@ -76,6 +85,17 @@ class ExperimentEngine:
 
         self._running = False
         self._autotuners = {}  # loop_name -> RelayAutoTuner (active tuning sessions)
+
+        # Thread-safe snapshots (written under _lock by sampling thread,
+        # read under _lock by Flask thread in get_data_since)
+        self._tripped_snapshot = set()
+        self._latched_snapshot = set()
+        self._step_snapshot = {
+            "current_step": 0, "mode": "auto", "running": False,
+            "settled": False, "settled_cols": {},
+            "hold_elapsed": 0.0, "hold_total": 0.0,
+        }
+        self._instrument_status_snapshot = {}
 
     # Backward-compat aliases so external code (app.py) using the old lock names still works
     @property
@@ -95,13 +115,28 @@ class ExperimentEngine:
         for name, inst_cfg in self.config.get("instruments", {}).items():
             if inst_cfg.get("enabled", True):
                 drv = create_driver(inst_cfg)
-                drv.connect()
+                initial_status = "ok"
+                initial_error = ""
+                try:
+                    drv.connect()
+                except Exception as exc:
+                    log.error("Instrument '%s' failed to connect: %s", name, exc)
+                    initial_status = "disconnected"
+                    initial_error = str(exc)
                 self.drivers[name] = drv
                 # Store poll rate for per-instrument rate limiting
                 poll_rate = inst_cfg.get("poll_rate", 0)
                 if isinstance(poll_rate, (int, float)) and poll_rate > 0:
                     self._instrument_poll_rates[name] = poll_rate
                 self._last_instrument_read[name] = 0.0  # force first read
+                self._instrument_status[name] = {
+                    "status": initial_status,
+                    "type": inst_cfg.get("type", "simulated"),
+                    "consecutive_failures": 0,
+                    "last_error": initial_error,
+                    "last_reconnect_attempt": 0.0,
+                    "reconnect_count": 0,
+                }
 
         for loop_name, loop_cfg in self.config.get("control_loops", {}).items():
             if loop_cfg.get("enabled", True):
@@ -120,6 +155,17 @@ class ExperimentEngine:
             il for il in self.config.get("interlocks", [])
             if il.get("enabled", True)
         ]
+
+        # Validate channel IDs against connected hardware
+        for ch_name, ch_cfg in self.config.get("channels", {}).items():
+            if not ch_cfg.get("enabled", True):
+                continue
+            inst_name = ch_cfg.get("instrument", "")
+            driver = self.drivers.get(inst_name)
+            if driver and hasattr(driver, "validate_channel_id"):
+                ok, msg = driver.validate_channel_id(ch_cfg["channel_id"])
+                if not ok:
+                    log.error("Channel '%s': %s", ch_name, msg)
 
         # Pre-compute channel lists for fast iteration in hot loop
         # Group channels by instrument for batch read support
@@ -180,7 +226,6 @@ class ExperimentEngine:
         T = flat_sensors.get("Temperature")
         RH = flat_sensors.get("Humidity")
         if T is not None and RH is not None and RH > 0:
-            import math
             a, b = 17.27, 237.7
             gamma = (a * T) / (b + T) + math.log(RH / 100.0)
             flat_sensors["Dew Point (C)"] = (b * gamma) / (a - gamma)
@@ -197,17 +242,31 @@ class ExperimentEngine:
         Respects per-instrument poll rates: if an instrument's poll_rate
         interval hasn't elapsed, returns cached values for its channels.
         Uses batch reads (read_channels) when the driver supports it.
+        Tracks per-instrument health and attempts reconnection after
+        consecutive failures.
         """
         now = time.time()
         readings = {}
 
+        # Attempt reconnection for disconnected instruments before reading
+        self._attempt_reconnections(now)
+
         # Determine which instruments are due for a read
         instruments_to_read = set()
+        disconnected_instruments = set()
         for inst_name in self._channels_by_instrument:
+            status = self._instrument_status.get(inst_name, {})
+            if status.get("status") in ("disconnected", "reconnecting"):
+                disconnected_instruments.add(inst_name)
+                continue  # skip until reconnected
             min_interval = self._instrument_poll_rates.get(inst_name, 0)
             elapsed = now - self._last_instrument_read.get(inst_name, 0)
             if elapsed >= min_interval:
                 instruments_to_read.add(inst_name)
+
+        # Track which channels produced NaN per instrument this cycle
+        inst_nan_counts = {}   # inst_name -> number of NaN readings
+        inst_total_counts = {} # inst_name -> total channels read
 
         # Batch read for instruments that support it
         batch_read_done = set()  # instrument names handled by batch read
@@ -220,24 +279,40 @@ class ExperimentEngine:
                 channel_ids = [cid for _, cid, _, _ in ch_list]
                 try:
                     raw_values = driver.read_channels(channel_ids)
+                    nan_count = 0
                     for (ch_name, cid, slope, offset), raw in zip(ch_list, raw_values):
+                        if math.isnan(raw):
+                            nan_count += 1
                         val = raw * slope + offset
                         readings[ch_name] = val
                         self._cached_readings[ch_name] = val
                     self._last_instrument_read[inst_name] = now
                     batch_read_done.add(inst_name)
+                    inst_nan_counts[inst_name] = nan_count
+                    inst_total_counts[inst_name] = len(ch_list)
                 except Exception:
-                    pass  # fall through to per-channel reads
+                    log.warning("Batch read failed for %s, falling back to per-channel", inst_name, exc_info=True)
 
         # Per-channel reads for remaining instruments
         for ch_name, driver, channel_id, slope, offset, inst_name in self._input_channels:
             if ch_name in readings:
                 continue  # already handled by batch read
+            if inst_name in disconnected_instruments:
+                # Disconnected — report NaN so plots/interlocks see the gap
+                readings[ch_name] = float('nan')
+                continue
             if inst_name not in instruments_to_read:
                 # Not due yet — use cached value
                 readings[ch_name] = self._cached_readings.get(ch_name, 0.0)
                 continue
-            raw = driver.read_channel(channel_id)
+            try:
+                raw = driver.read_channel(channel_id)
+            except Exception:
+                log.warning("read_channel failed for %s/%s", inst_name, channel_id, exc_info=True)
+                raw = float('nan')
+            if math.isnan(raw):
+                inst_nan_counts[inst_name] = inst_nan_counts.get(inst_name, 0) + 1
+            inst_total_counts[inst_name] = inst_total_counts.get(inst_name, 0) + 1
             val = raw * slope + offset
             readings[ch_name] = val
             self._cached_readings[ch_name] = val
@@ -246,7 +321,68 @@ class ExperimentEngine:
         for inst_name in instruments_to_read - batch_read_done:
             self._last_instrument_read[inst_name] = now
 
+        # Update instrument health based on NaN counts
+        for inst_name in instruments_to_read:
+            status = self._instrument_status.get(inst_name)
+            if status is None:
+                continue
+            total = inst_total_counts.get(inst_name, 0)
+            nans = inst_nan_counts.get(inst_name, 0)
+            if total == 0:
+                continue
+            if nans == total:
+                # All channels returned NaN — likely disconnected
+                status["consecutive_failures"] += 1
+                if status["consecutive_failures"] >= self._RECONNECT_THRESHOLD:
+                    if status["status"] != "disconnected":
+                        log.warning(
+                            "Instrument '%s': %d consecutive all-NaN cycles, marking disconnected",
+                            inst_name, status["consecutive_failures"],
+                        )
+                    status["status"] = "disconnected"
+                    status["last_error"] = f"All {total} channels returned NaN"
+                elif status["consecutive_failures"] >= 1:
+                    status["status"] = "degraded"
+            elif nans > 0:
+                # Some channels NaN — degraded but not fully down
+                status["status"] = "degraded"
+                status["consecutive_failures"] = 0
+            else:
+                # All channels good
+                if status["status"] in ("degraded", "reconnecting"):
+                    log.info("Instrument '%s': recovered, all channels reading normally", inst_name)
+                status["status"] = "ok"
+                status["consecutive_failures"] = 0
+                status["last_error"] = ""
+
         return readings
+
+    def _attempt_reconnections(self, now):
+        """Try to reconnect disconnected instruments (with cooldown)."""
+        for inst_name, status in self._instrument_status.items():
+            if status["status"] != "disconnected":
+                continue
+            elapsed = now - status["last_reconnect_attempt"]
+            if elapsed < self._RECONNECT_COOLDOWN:
+                continue
+            status["last_reconnect_attempt"] = now
+            status["status"] = "reconnecting"
+            status["reconnect_count"] += 1
+            driver = self.drivers.get(inst_name)
+            if driver is None:
+                continue
+            log.info("Attempting reconnect for '%s' (attempt #%d)...", inst_name, status["reconnect_count"])
+            try:
+                driver.close()
+                driver.connect()
+                status["status"] = "ok"
+                status["consecutive_failures"] = 0
+                status["last_error"] = ""
+                log.info("Reconnected '%s' successfully", inst_name)
+            except Exception as exc:
+                status["status"] = "disconnected"
+                status["last_error"] = str(exc)
+                log.warning("Reconnect failed for '%s': %s", inst_name, exc)
 
     def _write_channel(self, channel_name, value):
         """Write a value to an output channel (inverse scaling applied)."""
@@ -272,7 +408,7 @@ class ExperimentEngine:
             cfg = self.loop_configs[loop_name]
             mode = cfg.get("mode", "manual")
             pv = readings.get(cfg["pv_channel"])
-            if pv is None:
+            if pv is None or (isinstance(pv, float) and math.isnan(pv)):
                 continue
 
             pid.setpoint = float(cfg["setpoint"])
@@ -336,9 +472,14 @@ class ExperimentEngine:
     # ------------------------------------------------------------------
 
     def _eval_condition(self, il, readings):
-        """Evaluate a single interlock condition against current readings."""
+        """Evaluate a single interlock condition against current readings.
+
+        Returns False for None or NaN values (indeterminate — cannot evaluate).
+        NaN arises when a device is disconnected; comparisons with NaN are
+        always False in Python, which would silently bypass the interlock.
+        """
         ch_value = readings.get(il["channel"])
-        if ch_value is None:
+        if ch_value is None or (isinstance(ch_value, float) and math.isnan(ch_value)):
             return False
         threshold = float(il["threshold"])
         condition = il["condition"]
@@ -440,7 +581,12 @@ class ExperimentEngine:
         re-trip on the next engine cycle.  Recovery actions are only
         executed if the condition has actually cleared.
         """
-        if name in self.latched_interlocks:
+        with self._lock:
+            is_latched = name in self.latched_interlocks
+            is_tripped = name in self.tripped_interlocks
+            readings = dict(self.latest_readings)
+
+        if is_latched:
             # Find the interlock definition
             il = None
             for _il in self.interlocks:
@@ -451,7 +597,7 @@ class ExperimentEngine:
             # Check whether the condition is still active
             condition_still_met = False
             if il:
-                condition_still_met = self._eval_condition(il, self.latest_readings)
+                condition_still_met = self._eval_condition(il, readings)
 
             if condition_still_met:
                 print(f"INTERLOCK RESET REJECTED: {name} (condition still active)")
@@ -461,13 +607,14 @@ class ExperimentEngine:
                                f"({il['channel']} {il['condition']} {il['threshold']})"
                 }
 
-            self.latched_interlocks.discard(name)
-            self.tripped_interlocks.discard(name)
+            with self._lock:
+                self.latched_interlocks.discard(name)
+                self.tripped_interlocks.discard(name)
             if il:
                 self._execute_interlock_recovery(il)
             print(f"INTERLOCK RESET (manual): {name}")
             return {"status": "ok", "message": f"Interlock '{name}' reset"}
-        elif name in self.tripped_interlocks:
+        elif is_tripped:
             return {"status": "error", "message": f"Interlock '{name}' is not latched — it will clear automatically"}
         else:
             return {"status": "error", "message": f"Interlock '{name}' is not tripped"}
@@ -667,6 +814,21 @@ class ExperimentEngine:
                     "timestamp": now,
                     "sensors": flat_sensors,
                 })
+                # Snapshot interlock and step state for thread-safe reads
+                self._tripped_snapshot = set(self.tripped_interlocks)
+                self._latched_snapshot = set(self.latched_interlocks)
+                self._step_snapshot = {
+                    "current_step": self.step_current,
+                    "mode": self.step_mode,
+                    "running": self.step_running,
+                    "settled": self.step_settled,
+                    "settled_cols": dict(self.step_settled_cols),
+                    "hold_elapsed": round(self.step_hold_elapsed, 1),
+                    "hold_total": self.step_hold_total,
+                }
+                self._instrument_status_snapshot = {
+                    name: dict(s) for name, s in self._instrument_status.items()
+                }
                 ctrl = dict(self.control_settings)
 
             subsample = log_subsample_default
@@ -713,20 +875,26 @@ class ExperimentEngine:
             readings = dict(self.latest_readings)
             pid_status = dict(self.latest_pid_status)
             ctrl = dict(self.control_settings)
+            tripped = list(self._tripped_snapshot)
+            latched = list(self._latched_snapshot)
+            step_snap = dict(self._step_snapshot)
+            inst_status = dict(self._instrument_status_snapshot)
+            saved = list(self.saved_points)
 
         step_status = {}
         if len(self.step_series) > 0:
-            current_step = self.step_series[self.step_current] if self.step_current < len(self.step_series) else {}
+            idx = step_snap["current_step"]
+            current_step = self.step_series[idx] if idx < len(self.step_series) else {}
             step_status = {
-                "current_step": self.step_current,
+                "current_step": idx,
                 "total_steps": len(self.step_series),
                 "step_name": current_step.get("name", ""),
-                "mode": self.step_mode,
-                "running": self.step_running,
-                "settled": self.step_settled,
-                "settled_cols": dict(self.step_settled_cols),
-                "hold_elapsed": round(self.step_hold_elapsed, 1),
-                "hold_total": self.step_hold_total,
+                "mode": step_snap["mode"],
+                "running": step_snap["running"],
+                "settled": step_snap["settled"],
+                "settled_cols": step_snap["settled_cols"],
+                "hold_elapsed": step_snap["hold_elapsed"],
+                "hold_total": step_snap["hold_total"],
             }
 
         return {
@@ -734,10 +902,11 @@ class ExperimentEngine:
             "sensors": readings,
             "pid_status": pid_status,
             "controls": ctrl,
-            "tripped_interlocks": list(self.tripped_interlocks),
-            "latched_interlocks": list(self.latched_interlocks),
+            "tripped_interlocks": tripped,
+            "latched_interlocks": latched,
             "step_series": step_status,
-            "saved_points": list(self.saved_points),
+            "instrument_status": inst_status,
+            "saved_points": saved,
         }
 
     def update_settings(self, data):
@@ -893,10 +1062,12 @@ class ExperimentEngine:
 
     def step_series_set_mode(self, mode):
         """Set step series mode to 'auto' or 'manual'."""
-        old_mode = self.step_mode
-        self.step_mode = mode
+        with self._lock:
+            old_mode = self.step_mode
+            self.step_mode = mode
+            if mode == "manual":
+                self.step_running = False
         if mode == "manual":
-            self.step_running = False
             # Restore PID loops that step series forced to auto back to manual
             if old_mode == "auto":
                 for col in self.step_columns:
@@ -914,12 +1085,13 @@ class ExperimentEngine:
         If *running* is given, set explicitly (idempotent).
         Otherwise toggle (legacy).
         """
-        if self.step_mode != "auto":
-            return
-        if running is not None:
-            self.step_running = bool(running)
-        else:
-            self.step_running = not self.step_running
+        with self._lock:
+            if self.step_mode != "auto":
+                return
+            if running is not None:
+                self.step_running = bool(running)
+            else:
+                self.step_running = not self.step_running
 
     def step_series_next(self):
         """Advance to next step."""
@@ -940,13 +1112,14 @@ class ExperimentEngine:
 
     def _go_to_step(self, idx):
         """Internal: jump to step index and apply setpoints."""
-        self.step_current = idx
-        self.step_hold_elapsed = 0.0
-        self._step_last_tick = None
-        self.step_settled = False
-        self.step_settled_cols = {}
-        step = self.step_series[idx]
-        self.step_hold_total = step["hold_time"]
+        with self._lock:
+            self.step_current = idx
+            self.step_hold_elapsed = 0.0
+            self._step_last_tick = None
+            self.step_settled = False
+            self.step_settled_cols = {}
+            step = self.step_series[idx]
+            self.step_hold_total = step["hold_time"]
         self._apply_step_setpoints(step)
 
     def _apply_step_setpoints(self, step):
@@ -1011,13 +1184,17 @@ class ExperimentEngine:
                     continue  # no tolerance → always settled, not tracked
                 tol = float(tol)
                 pv = readings.get(col["pv_channel"])
-                cols[header] = pv is not None and abs(pv - target) <= tol
+                cols[header] = (pv is not None
+                                and not (isinstance(pv, float) and math.isnan(pv))
+                                and abs(pv - target) <= tol)
             elif col["type"] == "watch":
                 if tol is None:
                     continue
                 tol = float(tol)
                 pv = readings.get(col["channel_name"])
-                cols[header] = pv is not None and abs(pv - target) <= tol
+                cols[header] = (pv is not None
+                                and not (isinstance(pv, float) and math.isnan(pv))
+                                and abs(pv - target) <= tol)
             elif col["type"] == "output_channel":
                 # No tolerance → exact match (appropriate for selectors)
                 tol = float(tol) if tol is not None else 0.0

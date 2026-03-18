@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/list_instruments.py)"
+    ]
+  }
+}
