@@ -44,7 +44,7 @@ function _startInterlockAlarm() {
   }
 
   beep();
-  _alarmInterval = setInterval(beep, 1300);
+  _alarmInterval = setInterval(beep, 800);
 }
 
 function _stopInterlockAlarm() {
@@ -95,13 +95,13 @@ function _playChime(type) {
       gain.connect(ctx.destination);
       osc.type = "sine";
       osc.frequency.value = freq;
-      var t0 = now + i * 0.18;
+      var t0 = now + i * 0.12;
       gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.06);
-      gain.gain.setValueAtTime(0.12, t0 + 0.15);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
+      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.04);
+      gain.gain.setValueAtTime(0.12, t0 + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
       osc.start(t0);
-      osc.stop(t0 + 0.5);
+      osc.stop(t0 + 0.35);
     });
   } else if (type === "hold_end") {
     // Three-note ascending ta-da (C5 → E5 → G5)
@@ -112,13 +112,13 @@ function _playChime(type) {
       gain.connect(ctx.destination);
       osc.type = "sine";
       osc.frequency.value = freq;
-      var t0 = now + i * 0.15;
+      var t0 = now + i * 0.1;
       gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.06);
-      gain.gain.setValueAtTime(0.12, t0 + 0.18);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.04);
+      gain.gain.setValueAtTime(0.12, t0 + 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
       osc.start(t0);
-      osc.stop(t0 + 0.55);
+      osc.stop(t0 + 0.4);
     });
   }
 }
