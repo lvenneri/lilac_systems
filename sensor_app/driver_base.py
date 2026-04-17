@@ -267,6 +267,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from driver_julabo import JulaboDriver
+    DRIVER_REGISTRY["julabo"] = JulaboDriver
+except ImportError:
+    pass
+
 
 def create_driver(instrument_config):
     driver_type = instrument_config.get("type", "simulated")

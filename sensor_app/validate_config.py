@@ -115,11 +115,31 @@ def _validate_channel_id_rigol(channel_id, direction):
     return True, ""
 
 
+_JULABO_VALID_CHANNELS = {
+    "BATH_TEMP", "EXT_TEMP", "SETPOINT", "POWER", "SAFETY_TEMP",
+    "HI_CUTOFF", "LEVEL", "PUMP", "START_STOP", "RAMP_RATE",
+}
+_JULABO_WRITABLE = {"SETPOINT", "PUMP", "START_STOP", "RAMP_RATE"}
+
+
+def _validate_channel_id_julabo(channel_id, direction):
+    key = channel_id.strip().upper()
+    if key not in _JULABO_VALID_CHANNELS:
+        return False, (
+            f"unknown channel '{channel_id}'. "
+            f"Valid: {sorted(_JULABO_VALID_CHANNELS)}"
+        )
+    if direction == "output" and key not in _JULABO_WRITABLE:
+        return False, f"channel '{key}' is read-only"
+    return True, ""
+
+
 _CHANNEL_ID_VALIDATORS = {
     "ni_cdaq": _validate_channel_id_ni_cdaq,
     "alicat": _validate_channel_id_alicat,
     "yokogawa_wt": _validate_channel_id_yokogawa,
     "rigol_dho": _validate_channel_id_rigol,
+    "julabo": _validate_channel_id_julabo,
 }
 
 
@@ -361,12 +381,21 @@ def validate(config):
         if tol is not None and (not isinstance(tol, (int, float)) or tol <= 0):
             errors.append(f"Step Series > column '{header}': Tolerance must be > 0, got {tol}")
 
-    # Per-step checks
-    for step in step_series:
+    # Per-step checks (validate all tests, not just the active one)
+    step_tests = config.get("step_tests", {})
+    all_steps = []
+    for test_name, test_steps in step_tests.items():
+        for step in test_steps:
+            all_steps.append((test_name, step))
+    if not all_steps:
+        all_steps = [("", step) for step in step_series]
+
+    for test_name, step in all_steps:
         step_num = step.get("step_num", "?")
+        prefix = f"Step Series > Test '{test_name}' > Step {step_num}" if test_name else f"Step Series > Step {step_num}"
         hold = step.get("hold_time", 0)
         if not isinstance(hold, (int, float)) or hold < 0:
-            errors.append(f"Step Series > Step {step_num}: Hold Time must be >= 0, got {hold}")
+            errors.append(f"{prefix}: Hold Time must be >= 0, got {hold}")
 
         # Check for over-specification: a step that has both an SP column
         # (which drives a PID loop's output) and a direct output column
@@ -385,7 +414,7 @@ def validate(config):
                 if ch_name in active_pid_outputs:
                     loop_name = pid_output_to_loop.get(ch_name, "?")
                     errors.append(
-                        f"Step Series > Step {step_num}: output channel '{ch_name}' is set directly "
+                        f"{prefix}: output channel '{ch_name}' is set directly "
                         f"AND driven by PID loop '{loop_name}' via SP column in the same step — "
                         f"use blank/NA in one column to avoid conflict"
                     )

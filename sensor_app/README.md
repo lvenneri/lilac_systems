@@ -458,6 +458,83 @@ The Rigol DHO driver (`rigol_dho`) communicates with DHO5000-series oscilloscope
 python driver_rigol_dho.py USB0::0x1AB1::0x0518::DS5A243600000::INSTR
 ```
 
+### Julabo MAGIO Setup
+
+The Julabo driver (`julabo`) communicates with MAGIO MX bridge-mounted, heating, and refrigerated circulators over RS232/USB serial or Ethernet TCP. One Instruments row per unit.
+
+**Unit-side configuration (required before first use):**
+
+1. Power on the Julabo and wait for the home screen.
+2. Fill the bath and set the high-temperature cut-off (rear slotted pot, at least 25 K below the fluid flash point). See the unit manual section 7.7.
+3. Enable remote control — without this, the driver can read values but **cannot** set the setpoint, start/stop, or change pump capacity:
+   - Touch **Settings** → **Connect unit** → **Remote control**
+   - Select the interface you're using: **Serial** (RS232/USB-B), **USB** (USB-A host), or **Ethernet**
+4. If using serial, verify interface parameters under **Connect unit** → **Interfaces** → **Serial** match the defaults this driver uses (4800 baud, 7E1, hardware handshake). The driver opens the port with `rtscts=True`.
+5. If using Ethernet, note the IP address under **Connect unit** → **Interfaces** → **Ethernet**. The default remote-control TCP port is `49200`.
+
+The driver calls the `status` command on connect and logs a warning if the unit is still in manual mode (status codes `00`/`01`).
+
+**Channel IDs:**
+
+| Channel ID | Description | Units | Writable |
+|-----------|-------------|-------|----------|
+| `BATH_TEMP` | Internal bath temperature | degC | No |
+| `EXT_TEMP` | External Pt100 sensor temperature | degC | No |
+| `SETPOINT` | Working temperature setpoint | degC | Yes |
+| `POWER` | Current heating (+) / cooling (−) power | % | No |
+| `SAFETY_TEMP` | Safety sensor temperature | degC | No |
+| `HI_CUTOFF` | High-temperature cut-off setting (rear pot) | degC | No |
+| `LEVEL` | Bath fluid filling level | % | No |
+| `PUMP` | Pump capacity (40–100%) | % | Yes |
+| `START_STOP` | 0 = standby, 1 = tempering running | — | Yes |
+| `RAMP_RATE` | Software ramp rate for setpoint changes (0 = instant) | K/min | Yes |
+
+**Ramp rate:** The MAGIO hardware programmer supports gradient ramps only through the touchscreen menu — there is no direct interface command for a ramp rate. This driver implements a software ramp: when `RAMP_RATE > 0`, writing a new value to `SETPOINT` starts a background thread that steps the hardware setpoint toward the target at the configured rate (K/min). Set `RAMP_RATE` to `0` for instant setpoint jumps. The ramp thread is cancelled and replaced on each new `SETPOINT` write. Because the ramp runs inside the driver process, it is paused if the app is stopped — treat it as a convenience, not a safety-critical feature.
+
+**Instrument config fields:**
+
+| Field | Purpose |
+|-------|---------|
+| Address / Device | Serial port (`/dev/ttyUSB0`, `COM3`) or TCP `host:port` (e.g. `192.168.1.100:49200`) |
+| Query Command | Transport: `serial` (default) or `tcp` |
+| Timeout (s) | Communication timeout (default 2) |
+| Poll Rate (s) | Minimum interval between hardware reads of the same channel (default 0.5) |
+| Notes | Baud rate override (default 4800) |
+
+**Remote-control-only writes:** `SETPOINT`, `PUMP`, and `START_STOP` require the unit to be in remote control mode. Reading any channel works in either mode.
+
+#### Example — Refrigerated chiller controlling reactor jacket temperature
+
+**Instruments:**
+
+| Instrument Name | Type | Address / Device | Query Command | Poll Rate (s) | Timeout (s) | Enabled |
+|----------------|------|-----------------|---------------|---------------|-------------|---------|
+| Chiller | julabo | /dev/ttyUSB0 | serial | 1 | 2 | Yes |
+
+**Channels:**
+
+| Channel Name | Instrument | Channel ID | Direction | Units | Min | Max |
+|-------------|-----------|------------|-----------|-------|-----|-----|
+| jacket_temp | Chiller | BATH_TEMP | input | degC | -50 | 200 |
+| jacket_sp | Chiller | SETPOINT | output | degC | -40 | 150 |
+| jacket_power | Chiller | POWER | input | % | -100 | 100 |
+| jacket_level | Chiller | LEVEL | input | % | 0 | 100 |
+| jacket_ramp | Chiller | RAMP_RATE | output | K/min | 0 | 10 |
+| chiller_run | Chiller | START_STOP | output | — | 0 | 1 |
+
+With `chiller_run` in Control Options as `Off,On` (0 and 1), it becomes a segmented selector on the dashboard. Setting `jacket_ramp` to `2` then writing `jacket_sp = 80` will ramp the setpoint from its current value up to 80 °C at 2 K/min. A subsequent `jacket_sp` write with `jacket_ramp` still > 0 cancels the in-progress ramp and starts a new one toward the new target.
+
+**Ethernet example:** change Address to `192.168.1.42:49200` and Query Command to `tcp`.
+
+**Testing the driver standalone:**
+
+```bash
+python driver_julabo.py /dev/ttyUSB0 serial
+python driver_julabo.py 192.168.1.42:49200 tcp
+```
+
+This runs a 10-sample read loop over `BATH_TEMP`, `EXT_TEMP`, `SETPOINT`, `POWER`, `SAFETY_TEMP`, `LEVEL`, `PUMP`, and `START_STOP` so you can verify the connection before plugging into a full experiment config.
+
 ## PID Auto-Tuning
 
 The dashboard includes a built-in auto-tuner for PID loops, accessible via the **Tune** button on each PID panel.
@@ -519,6 +596,7 @@ Built-in driver types for the Instruments sheet `Type` column:
 | `yokogawa_wt` | Yokogawa WT333E power analyzer via GPIB/VISA | Requires `pyvisa` |
 | `alicat` | Alicat mass flow/pressure controllers via USB serial | Requires `pyserial` |
 | `rigol_dho` | Rigol DHO-series oscilloscope | Requires `pyvisa` |
+| `julabo` | Julabo MAGIO MX circulators / refrigerated chillers via RS232/USB or Ethernet TCP | Requires `pyserial` |
 
 Hardware drivers are imported conditionally — if the required library is not installed, the driver is silently unavailable and the validator will warn if you reference it. The engine falls back to `simulated` for unknown types.
 

@@ -29,7 +29,8 @@
       "Bash(python -c \"from sensor_app.validate_config import _CHANNEL_ID_VALIDATORS; print\\(''Validators loaded:'', list\\(_CHANNEL_ID_VALIDATORS.keys\\(\\)\\)\\)\")",
       "Bash(node -c /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/static/experiment.js)",
       "Bash(node -c /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/static/dashboard.js)",
-      "Bash(python -c \"import py_compile; py_compile.compile\\(''experiment_engine.py'', doraise=True\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''experiment_engine.py'', doraise=True\\)\")",
+      "Bash(wc -l /Users/nitwit/Dropbox/LilacBox/lilac_systems/sensor_app/*.py)"
     ]
   }
 }

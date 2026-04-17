@@ -801,10 +801,48 @@ let stepSeriesLastAction = 0;  // timestamp of last user click — suppress poll
 function buildStepSeriesControls(cfg) {
   const steps = cfg.step_series || [];
   const columns = cfg.step_columns || [];
+  const testNames = cfg.step_test_names || [];
+  const testMap = cfg.step_tests || {};
   if (steps.length === 0) return;
 
   const container = document.getElementById("step_series_container");
   if (!container) return;
+
+  // === Test selector dropdown (only if multiple tests) ===
+  var testSelect = null;
+  if (testNames.length > 1) {
+    const testRow = document.createElement("div");
+    testRow.className = "step-series-test-row";
+    const testLabel = document.createElement("label");
+    testLabel.className = "step-series-indicator";
+    testLabel.textContent = "Test Sequence";
+    testLabel.setAttribute("for", "step_test_select");
+    testRow.appendChild(testLabel);
+    testSelect = document.createElement("select");
+    testSelect.className = "form-select form-select-sm step-test-select";
+    testSelect.id = "step_test_select";
+    testNames.forEach(function(name) {
+      var opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      testSelect.appendChild(opt);
+    });
+    testSelect.addEventListener("change", function() {
+      stepSeriesLastAction = Date.now();
+      var selected = this.value;
+      fetch('/step_series/select_test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ test: selected })
+      });
+      // Update local steps reference
+      if (stepSeriesUI && testMap[selected]) {
+        stepSeriesUI.steps = testMap[selected];
+      }
+    });
+    testRow.appendChild(testSelect);
+    container.appendChild(testRow);
+  }
 
   // === Header: Step indicator + Auto/Manual toggle ===
   const header = document.createElement("div");
@@ -978,6 +1016,8 @@ function buildStepSeriesControls(cfg) {
     steps: steps,
     columns: columns,
     watchRows: watchRows,
+    testSelect: testSelect,
+    testMap: testMap,
   };
 }
 
@@ -1070,6 +1110,14 @@ function updateStepSeriesStatus(status) {
   }
 
   if (!cooldown) {
+    // Sync test selector from server
+    if (ui.testSelect && status.active_test && ui.testSelect.value !== status.active_test) {
+      ui.testSelect.value = status.active_test;
+      if (ui.testMap && ui.testMap[status.active_test]) {
+        ui.steps = ui.testMap[status.active_test];
+      }
+    }
+
     // Sync mode toggle from server (setting .checked doesn't fire change event)
     if (ui.modeRadios && ui.modeRadios[status.mode]) {
       ui.modeRadios[status.mode].checked = true;

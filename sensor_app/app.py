@@ -168,6 +168,8 @@ def get_config():
             })
     frontend_config["step_series"] = config.get("step_series", [])
     frontend_config["step_columns"] = config.get("step_columns", [])
+    frontend_config["step_test_names"] = config.get("step_test_names", [])
+    frontend_config["step_tests"] = config.get("step_tests", {})
     # Instrument metadata for status panel
     frontend_config["instruments"] = {}
     for name, inst_cfg in config.get("instruments", {}).items():
@@ -263,6 +265,13 @@ def step_series_prev():
 def step_series_goto():
     data = request.get_json()
     engine.step_series_go_to_step(int(data["step"]))
+    return jsonify({"status": "ok"})
+
+
+@app.route('/step_series/select_test', methods=['POST'])
+def step_series_select_test():
+    data = request.get_json()
+    engine.step_series_select_test(data["test"])
     return jsonify({"status": "ok"})
 
 

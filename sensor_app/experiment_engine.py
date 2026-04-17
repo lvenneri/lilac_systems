@@ -71,6 +71,9 @@ class ExperimentEngine:
         self._RECONNECT_COOLDOWN = 30.0    # seconds between reconnect attempts
 
         # Step series state
+        self.step_tests = config.get("step_tests", {})
+        self.step_test_names = config.get("step_test_names", [])
+        self.step_active_test = self.step_test_names[0] if self.step_test_names else ""
         self.step_series = config.get("step_series", [])
         self.step_columns = config.get("step_columns", [])
         self.step_current = 0
@@ -94,6 +97,7 @@ class ExperimentEngine:
             "current_step": 0, "mode": "auto", "running": False,
             "settled": False, "settled_cols": {},
             "hold_elapsed": 0.0, "hold_total": 0.0,
+            "active_test": self.step_active_test,
         }
         self._instrument_status_snapshot = {}
 
@@ -825,6 +829,7 @@ class ExperimentEngine:
                     "settled_cols": dict(self.step_settled_cols),
                     "hold_elapsed": round(self.step_hold_elapsed, 1),
                     "hold_total": self.step_hold_total,
+                    "active_test": self.step_active_test,
                 }
                 self._instrument_status_snapshot = {
                     name: dict(s) for name, s in self._instrument_status.items()
@@ -889,6 +894,7 @@ class ExperimentEngine:
                 "current_step": idx,
                 "total_steps": len(self.step_series),
                 "step_name": current_step.get("name", ""),
+                "active_test": step_snap.get("active_test", ""),
                 "mode": step_snap["mode"],
                 "running": step_snap["running"],
                 "settled": step_snap["settled"],
@@ -1059,6 +1065,23 @@ class ExperimentEngine:
     # ------------------------------------------------------------------
     # Step Series control
     # ------------------------------------------------------------------
+
+    def step_series_select_test(self, test_name):
+        """Switch to a different test sequence by name."""
+        if test_name not in self.step_tests:
+            return
+        with self._lock:
+            self.step_active_test = test_name
+            self.step_series = self.step_tests[test_name]
+            self.step_current = 0
+            self.step_hold_elapsed = 0.0
+            self._step_last_tick = None
+            self.step_settled = False
+            self.step_settled_cols = {}
+            self.step_running = False
+            self.step_hold_total = self.step_series[0]["hold_time"] if self.step_series else 0.0
+        if self.step_series and self.step_mode == "auto":
+            self._apply_step_setpoints(self.step_series[0])
 
     def step_series_set_mode(self, mode):
         """Set step series mode to 'auto' or 'manual'."""

@@ -273,6 +273,8 @@ def load_config(filepath):
     headers, data = _sheet_rows(wb, "Step Series")
     step_series = []
     step_columns = []
+    step_tests = {}  # {test_name: [steps...]}  — ordered dict (insertion order)
+    step_test_names = []  # ordered list of unique test names
     if headers and data:
         # Check for tolerance row (first data row with "Tolerance" in Step # column)
         tolerance_row = None
@@ -286,7 +288,7 @@ def load_config(filepath):
 
         for h in headers:
             h_stripped = str(h).strip() if h else ""
-            if not h_stripped or h_stripped in ("Step #", "Hold Time (s)", "Name"):
+            if not h_stripped or h_stripped in ("Step #", "Hold Time (s)", "Name", "Test Sequence"):
                 continue
             col_info = {"header": h_stripped}
             if h_stripped.startswith("SP: "):
@@ -350,14 +352,27 @@ def load_config(filepath):
                             "value": val,
                         }
             name = str(d.get("Name", "")).strip()
-            step_series.append({
+            test_name = str(d.get("Test Sequence", "")).strip()
+            step_entry = {
                 "step_num": int(step_num),
                 "name": name,
                 "hold_time": float(hold_time),
                 "setpoints": setpoints,
-            })
-    config["step_series"] = step_series
+            }
+            step_series.append(step_entry)
+            if test_name:
+                if test_name not in step_tests:
+                    step_tests[test_name] = []
+                    step_test_names.append(test_name)
+                step_tests[test_name].append(step_entry)
+    # If no Test column was used, treat all steps as a single unnamed test
+    if not step_tests and step_series:
+        step_tests["Default"] = step_series
+        step_test_names = ["Default"]
+    config["step_series"] = step_tests.get(step_test_names[0], []) if step_test_names else []
     config["step_columns"] = step_columns
+    config["step_tests"] = step_tests
+    config["step_test_names"] = step_test_names
 
     wb.close()
     return config
